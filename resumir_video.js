@@ -118,7 +118,7 @@ async function resumirVideo(youtubeUrl, language = 'español') {
     // --- PASO 4: GUARDAR EN ARCHIVO MD ---
     try {
         // Aseguramos que el contenido del archivo es el resumen generado por Gemini
-        await fs.writeFile("pending/" + outputFileName, `URL: ${youtubeUrl}\n` + summary);
+        await fs.writeFile("docs/pending/" + outputFileName, `URL: ${youtubeUrl}\n` + summary);
         console.log(`\n✅ Resumen guardado exitosamente en: ${outputFileName}`);
     } catch (error) {
         console.error(`\n❌ ERROR al guardar el archivo ${outputFileName}:`, error.message);
