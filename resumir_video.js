@@ -22,8 +22,8 @@ const ai = new GoogleGenAI({apiKey: GEMINI_API_KEY});
 const EMAIL_USER = "david.rey.1040@gmail.com";        // 📧 Tu dirección de Gmail
 const EMAIL_PASS = "bnbh nvik drov sgmk";      // 🔑 Tu contraseña de aplicación (App Password)
 //const EMAIL_TO = "noel.carlos@gmail.com";          // 📬 Correo del destinatario
-const EMAIL_TO = "kl2053258@gmail.com"; 
-const EMAIL_BCC = "noel.carlos@gmail.com";
+const EMAIL_TO = "noel.carlos@gmail.com"; 
+const EMAIL_BCC = null; //"kl2053258@gmail.com";
 // -----------------------------------------------------
 
 /**
@@ -166,18 +166,18 @@ async function resumirVideo(youtubeUrl) {
         console.log('\n-> 2. Generando resumen con la IA de Gemini...');
 
         // PROMPT MODIFICADO: Pedimos el título y el idioma en las primeras líneas.
-        const prompt = `Por favor, analiza y resume el siguiente transcript de un video de YouTube. 
-        En la primera línea del resultado, proporciona **únicamente el título más probable del video** basado en el contenido del transcript. 
-        Luego, en una segunda línea separada, incluye solo el idioma original detectado del transcript (ej: "Idioma Original: Español" o "Original Language: English").
-        
-        Después de estas dos líneas de metadata, genera el resumen.
-        El resumen debe ser exhaustivo, destacar los puntos clave, argumentos principales y conclusiones, usando formato Markdown (encabezados, listas, negritas) para facilitar la lectura.
-        Responde **únicamente** en el idioma original, sin realizar ninguna traducción.
+        const prompt = `Por favor, analiza y resume el siguiente transcript de un video de YouTube.
+            En la primera línea del resultado, proporciona únicamente el título más probable del video basado en el contenido del transcript.
+            En la segunda línea separada, indica solo el idioma original detectado del transcript (ej: "Idioma Original: Español" o "Original Language: English").
 
-        TRANSCRIPT:
-        ---
-        ${transcriptText}
-        ---`;
+            **Muy importante:** A partir de la tercera línea, responde únicamente en el idioma detectado del transcript. Si el transcript está en inglés, responde en inglés; si está en español, responde en español. No traduzcas ni cambies el idioma, aunque el prompt esté en español.
+
+            Luego, genera un resumen exhaustivo, destacando puntos clave, argumentos principales y conclusiones, usando formato Markdown (encabezados, listas, negritas) para facilitar la lectura.
+
+            TRANSCRIPT:
+            ---
+            ${transcriptText}
+            ---`;
 
         const response = await ai.models.generateContent({
             model: 'gemini-2.5-flash', 
@@ -205,7 +205,7 @@ async function resumirVideo(youtubeUrl) {
         return;
     }
     
-    // --- PASO 4: GUARDAR EN ARCHIVO MD ---
+    /* --- PASO 4: GUARDAR EN ARCHIVO MD ---
     if (finalContent) {
         try {
             await fs.writeFile(outputFileName, finalContent);
@@ -213,7 +213,7 @@ async function resumirVideo(youtubeUrl) {
         } catch (error) {
             console.error(`\n❌ ERROR al guardar el archivo ${outputFileName}:`, error.message);
         }
-    }
+    }*/
 
     // --- PASO 5: ENVIAR EMAIL ---
     if (finalContent) {
