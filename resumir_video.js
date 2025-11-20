@@ -1,241 +1,506 @@
 // ==========================================================
-// IMPORTACIÓN DE LIBRERÍAS
+// LIBRARY IMPORTS
 // ==========================================================
 import { GoogleGenAI } from '@google/genai';
+import { OpenAI } from 'openai';
 import { YoutubeTranscript } from '@danielxceron/youtube-transcript';
-// Módulos nativos para archivos y URLs
-import * as fs from 'fs/promises'; 
+import * as fs from 'fs/promises';
+import * as path from 'path';
 import { URL } from 'url';
-// Módulo para el envío de correos
 import * as nodemailer from 'nodemailer';
-import { marked } from 'marked'; // <- NUEVA IMPORTACIÓN PARA CONVERSIÓN DE MD A HTML
+import { marked } from 'marked';
+import dotenv from 'dotenv';
 
-// **********************************************************
-// Clave de API Hardcoded (NO RECOMENDADO en producción)
-// **********************************************************
-const GEMINI_API_KEY = "AIzaSyBapbpwI8zBdCbw_OzeS7Fwikzx7l82Cgw";
-// Inicializa el cliente de Gemini.
-const ai = new GoogleGenAI({apiKey: GEMINI_API_KEY});
+dotenv.config();
 
+// ==========================================================
+// CONFIGURATION (CONSTANTES)
+// ==========================================================
 
-// --- CONFIGURACIÓN DE EMAIL (DEBE SER PERSONALIZADA) ---
-const EMAIL_USER = "david.rey.1040@gmail.com";        // 📧 Tu dirección de Gmail
-const EMAIL_PASS = "bnbh nvik drov sgmk";      // 🔑 Tu contraseña de aplicación (App Password)
-//const EMAIL_TO = "noel.carlos@gmail.com";          // 📬 Correo del destinatario
+// --- PIPELINE DIRECTORIES ---
+const BASE_DIR = './pipeline-data';
+const DIRS = {
+    RAW: path.join(BASE_DIR, '1-transcripts'),      // Input for AI
+    SUMMARY: path.join(BASE_DIR, '2-summaries'),        // Input for Email
+    DONE_RAW: path.join(BASE_DIR, '3-done', 'raw'),       // Archived raw files
+    DONE_SUMMARY: path.join(BASE_DIR, '3-done', 'sent')   // Archived sent files
+};
+
+// --- API KEYS ---
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY; // REPLACE THIS
+const GEMINI_MODEL = "gemini-2.0-flash"; 
+
+const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY; 
+const DEEPSEEK_BASE_URL = "https://api.deepseek.com/v1"; 
+const DEEPSEEK_MODEL = "deepseek-chat";
+
+const LMSTUDIO_API_KEY = process.env.LMSTUDIO_API_KEY;
+const LMSTUDIO_BASE_URL = "http://localhost:1234/v1"; 
+const LMSTUDIO_MODEL_NAME = "openai/gpt-oss-20b"; 
+// const LMSTUDIO_MODEL_NAME = "qwen2.5-14b-instruct-mlx"; 
+// const LMSTUDIO_MODEL_NAME = "deepseek/deepseek-r1-0528-qwen3-8b"; 
+// // "qwen2.5-14b-instruct-mlx"; // "mistralai/mistral-7b-instruct-v0.3"; // "openai/gpt-oss-20b"; // "deepseek-r1-distill-qwen-7b"; 
+
+// --- EMAIL CONFIG ---
+const EMAIL_USER = "david.rey.1040@gmail.com";
+const EMAIL_PASS = process.env.EMAIL_PASS;
 const EMAIL_TO = "noel.carlos@gmail.com"; 
 const EMAIL_BCC = null; //"kl2053258@gmail.com";
-// -----------------------------------------------------
 
-/**
- * Función para extraer el ID del video de YouTube de la URL.
- */
-function extractVideoId(urlString) {
-    try {
-        const url = new URL(urlString);
-        if (url.hostname.includes('youtube.com') && url.searchParams.has('v')) {
-            return url.searchParams.get('v');
+
+// ==========================================================
+// SECTION 1: AI CLIENTS (Dependency Injection)
+// ==========================================================
+
+class IModelClient {
+    async generateContent(promptContent) { throw new Error("Method 'generateContent' is not implemented."); }
+}
+
+class GeminiClient extends IModelClient {
+    constructor(apiKey, modelName) {
+        super();
+        this.ai = new GoogleGenAI({ apiKey });
+        this.modelName = modelName;
+    }
+    async generateContent(promptContent) {
+        const response = await this.ai.models.generateContent({
+            model: this.modelName, contents: promptContent,
+        });
+        return { client: "Gemini", model: this.modelName, rawContent: response.text } 
+    }
+}
+
+class OpenAICompatibleClient extends IModelClient {
+    constructor(apiKey, baseUrl, modelName) {
+        super();
+        this.ai = new OpenAI({ apiKey, baseURL: baseUrl });
+        this.modelName = modelName;
+    }
+    async generateContent(promptContent) {
+        const response = await this.ai.chat.completions.create({
+            model: this.modelName,
+            messages: [{ role: "user", content: promptContent }],
+            temperature: 0.1,
+        });
+        return { client: "OpenAI", model: this.modelName, rawContent: response.choices[0].message.content } 
+    }
+}
+
+class LMStudioClient extends IModelClient {
+    constructor(apiKey, baseUrl, modelName) {
+        super();
+        this.ai = new OpenAI({ apiKey, baseURL: baseUrl });
+        this.modelName = modelName;
+    }
+    async generateContent(promptContent) {
+        const response = await this.ai.chat.completions.create({
+            model: this.modelName,
+            messages: [{ role: "user", content: promptContent }],
+            temperature: 0,
+        });
+        let content = response.choices[0].message.content;
+        let rawContent = content = content.replace(/<think>[\s\S]*?<\/think>\s*/g, '') // Clean "think" tags
+        return { client: "LMStudio", model: this.modelName, rawContent: rawContent } 
+    }
+}
+
+function createAiClient(provider) {
+    switch (provider) {
+        case 'gemini': return new GeminiClient(GEMINI_API_KEY, GEMINI_MODEL);
+        case 'deepseek': return new OpenAICompatibleClient(DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL, DEEPSEEK_MODEL);
+        case 'lmstudio': return new LMStudioClient(LMSTUDIO_API_KEY, LMSTUDIO_BASE_URL, LMSTUDIO_MODEL_NAME);
+        default: throw new Error(`Unknown provider: ${provider}`);
+    }
+}
+
+// ==========================================================
+// SECTION 2: PIPELINE MANAGER
+// ==========================================================
+
+class PipelineManager {
+    constructor(aiClient) {
+        this.aiClient = aiClient;
+    }
+
+    // --- UTILITIES ---
+
+    async initDirs() {
+        for (const dir of Object.values(DIRS)) {
+            await fs.mkdir(dir, { recursive: true });
         }
-        if (url.hostname.includes('youtu.be') && url.pathname.length > 1) {
-            return url.pathname.substring(1);
-        }
-    } catch (e) {
+    }
+
+    extractVideoId(urlString) {
+        try {
+            const url = new URL(urlString);
+            if (url.hostname.includes('youtube.com') && url.searchParams.has('v')) return url.searchParams.get('v');
+            if (url.hostname.includes('youtu.be')) return url.pathname.substring(1);
+        } catch (e) { return null; }
         return null;
     }
-    return null;
-}
 
-/**
- * Función para obtener la URL de la portada (thumbnail) de YouTube.
- * @param {string} videoId El ID del video de YouTube.
- * @returns {string} La URL de la imagen de portada de alta resolución.
- */
-function getThumbnailUrl(videoId) {
-    // URL predecible de la miniatura de alta calidad
-    return `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg`;
-}
+    // --- STAGE 1: DOWNLOAD (YouTube -> JSON in RAW folder) ---
 
-/**
- * Envía el resumen por correo electrónico en formato HTML (cuerpo del correo).
- * @param {string} videoId ID del video.
- * @param {string} subject Título del correo.
- * @param {string} finalContent Contenido completo generado por Gemini (MD).
- */
-async function sendEmail(videoId, subject, finalContent) {
-    console.log('\n-> 4. Iniciando envío de correo electrónico...');
-    
-    // --- CONVERSIÓN DE MARKDOWN A HTML ---
-    const summaryHtml = marked(finalContent);
-    const thumbnailUrl = getThumbnailUrl(videoId);
-    // ------------------------------------
-
-    // Configuración del transporte (ejemplo para Gmail)
-    const transporter = nodemailer.createTransport({
-        service: 'gmail',
-        auth: {
-            user: EMAIL_USER,
-            pass: EMAIL_PASS,
-        },
-    });
-
-    // Cuerpo del mensaje en HTML
-    const mailBodyHtml = `
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; border: 1px solid #ddd; padding: 20px;">
-            <h1 style="color: #4CAF50;">Noel ha generado este resumen para ti</h1>
-            <p><strong>Video:</strong> ${subject}</p>
-            <p><strong>URL:</strong> <a href="https://www.youtube.com/watch?v=${videoId}">https://www.youtube.com/watch?v=${videoId}</a></p>
-            
-            <h3 style="border-bottom: 1px solid #eee; padding-bottom: 10px;">Portada del Video</h3>
-            <img src="${thumbnailUrl}" alt="Portada del video de YouTube" style="width: 100%; height: auto; display: block; margin-bottom: 20px;">
-
-            <h3 style="border-bottom: 1px solid #eee; padding-bottom: 10px;">Resumen Completo</h3>
-            
-            <div style="font-size: 16px;">
-                ${summaryHtml}
-            </div>
-            
-            <p style="margin-top: 30px; font-size: 16px; color: #999;">---<br>Este correo fue generado automáticamente por un script que ha hecho Noel en Node.js con ayuda de Gemini AI.</p>
-        </div>
-    `;
-
-    const mailOptions = {
-        from: EMAIL_USER,
-        to: EMAIL_TO,
-        subject: `[RESUMEN AI] ${subject}`,
-        html: mailBodyHtml, // <- Enviamos el cuerpo en formato HTML
-        bcc: EMAIL_BCC,
-        // No hay attachments
-    };
-
-    try {
-        await transporter.sendMail(mailOptions);
-        console.log(`✅ Correo electrónico con resumen HTML enviado a ${EMAIL_TO}. Asunto: ${mailOptions.subject}`);
-    } catch (error) {
-        console.error(`\n❌ ERROR al enviar el correo. Revisa tus credenciales. Mensaje:`, error.message);
-    }
-}
-
-/**
- * 1. Extrae el transcript de un video de YouTube.
- * 2. Lo envía a la IA de Gemini para que lo resuma y extraiga el título.
- * 3. Guarda el resumen y lo envía por email.
- * * @param {string} youtubeUrl La URL del video de YouTube.
- */
-async function resumirVideo(youtubeUrl) {
-    
-    const videoId = extractVideoId(youtubeUrl);
-    if (!videoId) {
-        console.error(`\n❌ ERROR: No se pudo extraer el ID del video de la URL: ${youtubeUrl}. Asegúrate de que el formato es correcto.`);
-        return;
-    }
-    const outputFileName = `${videoId}.md`;
-
-    console.log(`\n==============================================`);
-    console.log(`   Procesando URL: ${youtubeUrl}`);
-    console.log(`   ID del Video: ${videoId}`);
-    console.log(`==============================================`);
-
-
-    // --- PASO 1: EXTRAER EL TRANSCRIPT ---
-    // ... (El código de extracción de transcripción permanece igual) ...
-    let transcriptText = '';
-    try {
-        console.log('-> 1. Intentando obtener la transcripción del video...');
+    async stageDownload(url) {
+        console.log(`\n🔵 [STAGE 1] Downloading content: ${url}`);
         
-        const transcriptArray = await YoutubeTranscript.fetchTranscript(youtubeUrl);
-        transcriptText = transcriptArray.map(item => item.text).join(' ');
-
-        if (transcriptText.length < 50) {
-            console.error('\n❌ ERROR: La transcripción obtenida es muy corta o no se encontró. El video podría no tener subtítulos disponibles o el idioma no está soportado.');
+        const videoId = this.extractVideoId(url);
+        if (!videoId) {
+            console.error(`❌ Invalid URL: ${url}`);
             return;
         }
 
-        console.log(`✅ Transcripción obtenida exitosamente. Longitud: ${transcriptText.length} caracteres.`);
+        try {
+            // Fetch transcript
+            const transcriptArray = await YoutubeTranscript.fetchTranscript(url);
+            const transcriptText = transcriptArray.map(item => item.text).join(' ');
 
-    } catch (error) {
-        console.error('\n❌ ERROR al extraer la transcripción. Asegúrate de que la URL es válida y el video tiene subtítulos.', error.message);
-        return;
+            // Create data object
+            const data = {
+                videoId: videoId,
+                originalUrl: url,
+                downloadDate: new Date().toISOString(),
+                transcript: transcriptText
+            };
+
+            // Save to RAW folder
+            const filePath = path.join(DIRS.RAW, `${videoId}.json`);
+            await fs.writeFile(filePath, JSON.stringify(data, null, 2));
+            
+            console.log(`✅ Saved to: ${filePath}`);
+            return videoId; 
+
+        } catch (error) {
+            console.error(`❌ Error downloading: ${error.message}`);
+        }
     }
 
+    // --- STAGE 2: SUMMARIZE (RAW folder -> MD in SUMMARY folder) ---
 
-    // --- PASO 2: GENERAR EL RESUMEN CON GEMINI ---
-    let summary = '';
-    let videoTitle = 'Resumen de Video de YouTube'; 
-    let finalContent = '';
+    async stageSummarize() {
+        console.log(`\n🟣 [STAGE 2] Searching for files to summarize in: ${DIRS.RAW}`);
+        
+        const files = await fs.readdir(DIRS.RAW);
+        const jsonFiles = files.filter(f => f.endsWith('.json'));
 
-    try {
-        console.log('\n-> 2. Generando resumen con la IA de Gemini...');
+        if (jsonFiles.length === 0) {
+            console.log("⚠️ No pending files to summarize.");
+            return;
+        }
 
-        // PROMPT MODIFICADO: Pedimos el título y el idioma en las primeras líneas.
-        const prompt = `Por favor, analiza y resume el siguiente transcript de un video de YouTube.
-            En la primera línea del resultado, proporciona únicamente el título más probable del video basado en el contenido del transcript.
-            En la segunda línea separada, indica solo el idioma original detectado del transcript (ej: "Idioma Original: Español" o "Original Language: English").
+        for (const file of jsonFiles) {
+            const inputPath = path.join(DIRS.RAW, file);
+            console.log(`   Processing: ${file}...`);
 
-            **Muy importante:** A partir de la tercera línea, responde únicamente en el idioma detectado del transcript. Si el transcript está en inglés, responde en inglés; si está en español, responde en español. No traduzcas ni cambies el idioma, aunque el prompt esté en español.
+            try {
+                const content = await fs.readFile(inputPath, 'utf-8');
+                const data = JSON.parse(content);
+                
+                // Generate summary
+                const { title, language, summaryBody, client, model, rawContent } = await this._callAI(data.transcript);
 
-            Luego, genera un resumen exhaustivo, destacando puntos clave, argumentos principales y conclusiones, usando formato Markdown (encabezados, listas, negritas) para facilitar la lectura.
+                data.title = title;
+                data.language = language;
+                data.markdown = summaryBody;
+                data.model = model;
+                data.client = client;
+                data.summaryDate = new Date().toISOString();
+                data.rawContent = rawContent
+
+                // Create final Markdown content
+                const mdContent = `# ${title}
+
+${summaryBody}`;
+
+                // Save to SUMMARY folder
+                const outputFileName = `${data.videoId}-${data.summaryDate}.md`;
+                await fs.writeFile(path.join(DIRS.SUMMARY, outputFileName), mdContent);
+                
+                await fs.unlink(inputPath);
+
+                // Move original file to DONE_RAW
+                await fs.writeFile(path.join(DIRS.DONE_RAW, `${data.videoId}-${data.summaryDate}.json`), JSON.stringify(data, null, 2));
+
+                console.log(`   ✅ Summarized and saved: ${outputFileName}`);
+
+            } catch (error) {
+                console.error(`   ❌ Error processing ${file}: ${error.message}`);
+            }
+        }
+    }
+
+    async _callAI(transcript) {
+        const prompt = `Analyze the following YouTube transcript and respond EXCLUSIVELY with a valid JSON object—no additional text, explanations, or formatting before or after.
+            The JSON must contain EXACTLY these fields:
+            - "title": a string with the most likely video title inferred from the transcript.
+            - "language": a string indicating the original language detected (e.g., "Spanish", "English", etc.).
+            - "model_used": a string (use "deepseek" for this context).
+            - "content": a string containing a comprehensive summary in Markdown format (use headings, bullet points, bold text, etc.), written in the same language as the transcript—no translation.
+
+            Strict rules:
+            - Do NOT wrap the JSON in code blocks (e.g., no \`\`\`json).
+            - Do NOT add comments, prefixes, or suffixes.
+            - The output must be parseable with JSON.parse().
+            - The "content" field must be a single Markdown-formatted string.
 
             TRANSCRIPT:
             ---
-            ${transcriptText}
+            ${transcript}
             ---`;
 
-        const response = await ai.models.generateContent({
-            model: 'gemini-2.5-flash', 
-            contents: prompt,
-        });
+        const { client, model, rawContent } = await this.aiClient.generateContent(prompt);
 
-        finalContent = response.text; // Contenido completo: Título + Idioma + Resumen
+        // Clean common artifacts (e.g., if model wraps response in ```json ... ```)
+        let cleanedJson = rawContent
+            .replace(/^```json\s*/i, '')
+            .replace(/^```\s*$/gm, '')
+            .trim();
 
-        // Procesamos el contenido para extraer el título (primera línea)
-        const lines = finalContent.split('\n');
-        if (lines.length > 0) {
-            videoTitle = lines[0].trim(); // Título para el email
-            summary = lines.slice(2).join('\n').trim(); // Contenido del resumen después del título y el idioma
+        let parsed;
+        try {
+            parsed = JSON.parse(cleanedJson);
+        } catch (e) {
+            console.error("❌ Failed to parse AI response as JSON:", cleanedJson);
+            // Fallback to avoid crashing
+            return {
+                title: "Error: Invalid JSON",
+                language: "Unknown",
+                model: model,
+                content: "Error: The AI did not return valid JSON.",
+                rawContent,
+                client
+            };
         }
-        
-        // --- PASO 3: MOSTRAR POR CONSOLA ---
+
+        return {
+            title: parsed.title || "Untitled Video",
+            language: parsed.language || "Unknown",
+            model: parsed.model_used || model,
+            summaryBody: parsed.content || "",
+            rawContent,
+            client
+        };
+    }
+
+
+    async _printToConsole(finalContent) {
         console.log('\n==============================================');
         console.log('               RESUMEN GENERADO (Consola)     ');
         console.log('==============================================');
-        console.log(finalContent); // Mostramos el contenido completo (título, idioma, resumen)
+        console.log(finalContent);
         console.log('==============================================');
+    }
+    // --- STAGE 3: EMAIL (SUMMARY folder -> Email -> DONE_SUMMARY folder) ---
 
-    } catch (error) {
-        console.error('\n❌ ERROR al comunicarse con la API de Gemini. Mensaje:', error.message);
+    // --- STAGE 3: EMAIL (SUMMARY folder -> Email -> Save HTML to DONE) ---
+
+    async stageEmail() {
+        console.log(`\n🟠 [STAGE 3] Searching for summaries to send in: ${DIRS.SUMMARY}`);
+
+        const files = await fs.readdir(DIRS.SUMMARY);
+        const mdFiles = files.filter(f => f.endsWith('.md'));
+
+        if (mdFiles.length === 0) {
+            console.log("⚠️ No summaries pending for email.");
+            return;
+        }
+
+        const transporter = nodemailer.createTransport({
+            service: 'gmail',
+            auth: { user: EMAIL_USER, pass: EMAIL_PASS }
+        });
+
+        for (const file of mdFiles) {
+            const filePath = path.join(DIRS.SUMMARY, file);
+            const jsonPath = path.join(DIRS.DONE_RAW, file.replace('.md', '.json'));
+
+            console.log(`   Processing: ${file}...`);
+
+            try {
+                // 1) Load Markdown Content
+                const mdContent = await fs.readFile(filePath, 'utf-8');
+
+                // 2) Load JSON Metadata (title, language, videoId, etc.)
+                const jsonExists = await fs.access(jsonPath).then(() => true).catch(() => false);
+
+                if (!jsonExists) {
+                    throw new Error(`Missing JSON metadata file: ${jsonPath}`);
+                }
+
+                const jsonData = JSON.parse(await fs.readFile(jsonPath, 'utf-8'));
+
+                const title = jsonData.title || "YouTube Summary";
+                const videoId = jsonData.videoId;
+                const thumbnailUrl = `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg`;
+                const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
+
+                // 3) Convert Markdown → HTML
+                const bodyHtml = marked(jsonData.markdown);
+
+                // 4) Build HTML Email
+                const finalHtml = `
+    <!DOCTYPE html>
+    <html>
+    <head>
+    <style>
+        body { font-family: Arial, sans-serif; background: #f5f5f5; max-width: 800px; margin: auto; }
+        .container { background: white; padding: 30px; border-radius: 10px; }
+        h1 { color: #333; }
+        .header-img { width: 100%; border-radius: 8px; }
+        .btn { background: #cc0000; color: white; padding: 12px 24px; text-decoration: none; border-radius: 4px; font-weight: bold; }
+    </style>
+    </head>
+    <body>
+        <div class="container">
+            <a href="${videoUrl}">
+                <img class="header-img" src="${thumbnailUrl}" />
+            </a>
+
+            <h1>${title}</h1>
+
+            <div style="text-align: center; margin-bottom: 20px;">
+                <a class="btn" href="${videoUrl}">Watch on YouTube</a>
+            </div>
+
+            ${bodyHtml}
+
+            <p style="font-size: 12px; color: #777; margin-top: 40px;">
+                Generated automatically — Video ID: ${videoId} Model: ${jsonData.model || 'N/A'} Client: ${jsonData.client || 'N/A'}
+            </p>
+        </div>
+    </body>
+    </html>
+                `;
+
+                // 5) Send email
+                await transporter.sendMail({
+                    from: EMAIL_USER,
+                    to: EMAIL_TO,
+                    bcc: EMAIL_BCC,
+                    subject: `[SUMMARY] ${title}`,
+                    html: finalHtml
+                });
+
+                // 6) Save email as HTML
+                const htmlFilename = file.replace('.md', '.html');
+                await fs.writeFile(path.join(DIRS.DONE_SUMMARY, htmlFilename), finalHtml);
+
+                // 7) Move Markdown to DONE folder
+                await fs.rename(filePath, path.join(DIRS.DONE_RAW, file));
+
+                console.log(`   ✅ Email sent & saved to DONE: ${htmlFilename}`);
+
+            } catch (error) {
+                console.error(`   ❌ Error sending ${file}: ${error.message}`);
+            }
+        }
+    }
+
+}
+
+// ==========================================================
+// MAIN EXECUTION
+// ==========================================================
+
+// ==========================================================
+// MAIN EXECUTION
+// ==========================================================
+
+async function main() {
+    // 1. Configure AI
+    // Options: 'deepseek', 'qwen', 'gemini', 'lmstudio'
+    const provider = 'lmstudio'; 
+    const aiClient = createAiClient(provider);
+    const pipeline = new PipelineManager(aiClient);
+
+    // 2. Initialize directories
+    await pipeline.initDirs();
+
+    // 3. Parse Arguments
+    const args = process.argv.slice(2);
+    
+    // Check for explicit flags
+    const explicitDownload = args.includes('--download');
+    const doSummarize = args.includes('--summarize') || args.includes('--all');
+    const doEmail = args.includes('--email') || args.includes('--all');
+    const doAll = args.includes('--all');
+
+    // Handle URLs (Multiple support)
+    // Logic: Find the index of --url, then take the next argument.
+    // We split by commas to allow: --url "https://y.com/1, https://y.com/2"
+    let urlsToProcess = [];
+    const urlArgIndex = args.indexOf('--url');
+    
+    if (urlArgIndex !== -1 && args[urlArgIndex + 1]) {
+        const urlRaw = args[urlArgIndex + 1];
+        // Split by comma, trim whitespace, and filter out empty strings
+        urlsToProcess = urlRaw.split(',').map(u => u.trim()).filter(u => u.length > 0);
+    }
+
+    // IMPLICIT LOGIC: If URLs are provided, we MUST download them.
+    // So, doDownload is true if explicitly requested OR if implicit via --url OR if --all
+    const doDownload = explicitDownload || urlsToProcess.length > 0 || doAll;
+
+    // --- HELP TEXT ---
+    if (args.length === 0) {
+        console.log(`
+Usage: node script.js [flags] [--url "http..., http..."]
+
+Flags:
+  --url "url1,url2" : Specifies video URLs (comma separated). Implicitly triggers download.
+  --download        : Force download mode (usually redundant if --url is used).
+  --summarize       : Processes ALL files in '1_raw_transcripts' -> '2_summaries'.
+  --email           : Sends ALL files in '2_summaries' -> email -> 'done'.
+  --all             : Runs the entire process chain (Download -> Summarize -> Email).
+
+Examples:
+  1. Download multiple videos (Implicit download):
+     node script.js --url "https://youtu.be/abc, https://youtu.be/xyz"
+  
+  2. Download and summarize immediately:
+     node script.js --summarize --url "https://youtu.be/abc"
+
+  3. Process existing pending files (no new download):
+     node script.js --summarize --email
+
+  4. Full cycle (Download, Summarize, Email):
+     node script.js --all --url "https://youtu.be/abc"
+        `);
         return;
     }
-    
-    /* --- PASO 4: GUARDAR EN ARCHIVO MD ---
-    if (finalContent) {
-        try {
-            await fs.writeFile(outputFileName, finalContent);
-            console.log(`\n✅ Resumen guardado exitosamente en: ${outputFileName}`);
-        } catch (error) {
-            console.error(`\n❌ ERROR al guardar el archivo ${outputFileName}:`, error.message);
-        }
-    }*/
 
-    // --- PASO 5: ENVIAR EMAIL ---
-    if (finalContent) {
-        await sendEmail(videoId, videoTitle, finalContent);
+    // --- SEQUENTIAL EXECUTION ---
+
+    // 1. Stage: Download
+    if (doDownload) {
+        if (urlsToProcess.length === 0) {
+            // Only show error if the user explicitly asked to download but gave no URLs
+            // If they just ran --summarize, we skip this warning.
+            if (explicitDownload || doAll) {
+                console.error("❌ Error: You requested a download (or --all) but provided no URLs via --url.");
+            } else {
+                console.log("ℹ️ Skipping download stage (no URLs provided).");
+            }
+        } else {
+            console.log(`\n🔵 [STAGE 1] Processing ${urlsToProcess.length} URL(s)...`);
+            // Process URLs sequentially to avoid rate limiting or potential overlapping file I/O issues
+            for (const url of urlsToProcess) {
+                await pipeline.stageDownload(url);
+            }
+        }
+    }
+
+    // 2. Stage: Summarize
+    // Note: If --all is present or --summarize is present, we run this.
+    if (doSummarize) {
+        await pipeline.stageSummarize();
+    }
+
+    // 3. Stage: Email
+    // Note: If --all is present or --email is present, we run this.
+    if (doEmail) {
+        await pipeline.stageEmail();
     }
 }
 
-
-// ==========================================================
-// LÓGICA DE EJECUCIÓN CON ARGUMENTOS DE LÍNEA DE COMANDO
-// ==========================================================
-
-const videoUrl = process.argv[2];
-
-if (!videoUrl) {
-    console.error(`
-🚨 ERROR: URL de YouTube no proporcionada.
-Uso correcto: node resumir_video.js <URL_DE_YOUTUBE>
-
-Ejemplo:
-node resumir_video.js "https://www.youtube.com/watch?v=kYJv139D5d8"
-`);
-} else {
-    resumirVideo(videoUrl);
-}
+main().catch(console.error);
