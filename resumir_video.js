@@ -10,6 +10,7 @@ import { URL } from 'url';
 import * as nodemailer from 'nodemailer';
 import { marked } from 'marked';
 import dotenv from 'dotenv';
+import JSON5 from 'json5';
 
 dotenv.config();
 
@@ -28,7 +29,7 @@ const DIRS = {
 
 // --- API KEYS ---
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY; // REPLACE THIS
-const GEMINI_MODEL = "gemini-2.0-flash"; 
+const GEMINI_MODEL = "gemini-2.5-flash-lite"; 
 
 const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY; 
 const DEEPSEEK_BASE_URL = "https://api.deepseek.com/v1"; 
@@ -38,15 +39,17 @@ const LMSTUDIO_API_KEY = process.env.LMSTUDIO_API_KEY;
 const LMSTUDIO_BASE_URL = "http://localhost:1234/v1"; 
 const LMSTUDIO_MODEL_NAME = "openai/gpt-oss-20b"; 
 // const LMSTUDIO_MODEL_NAME = "qwen2.5-14b-instruct-mlx"; 
-// const LMSTUDIO_MODEL_NAME = "deepseek/deepseek-r1-0528-qwen3-8b"; 
+//const LMSTUDIO_MODEL_NAME = "deepseek/deepseek-r1-0528-qwen3-8b"; 
 // // "qwen2.5-14b-instruct-mlx"; // "mistralai/mistral-7b-instruct-v0.3"; // "openai/gpt-oss-20b"; // "deepseek-r1-distill-qwen-7b"; 
 
 // --- EMAIL CONFIG ---
 const EMAIL_USER = "david.rey.1040@gmail.com";
 const EMAIL_PASS = process.env.EMAIL_PASS;
 const EMAIL_TO = "noel.carlos@gmail.com"; 
-const EMAIL_BCC = null; //"kl2053258@gmail.com";
-
+//const EMAIL_BCC = "kl2053258@gmail.com";
+//const EMAIL_BCC = "kl2053258@gmail.com,manuelvargash95@gmail.com";
+const EMAIL_BCC = "";
+const OVERRIDE_LANG = "Español"; // Set to null to auto-detect
 
 // ==========================================================
 // SECTION 1: AI CLIENTS (Dependency Injection)
@@ -111,6 +114,97 @@ function createAiClient(provider) {
         case 'lmstudio': return new LMStudioClient(LMSTUDIO_API_KEY, LMSTUDIO_BASE_URL, LMSTUDIO_MODEL_NAME);
         default: throw new Error(`Unknown provider: ${provider}`);
     }
+}
+
+export function healAIJson(raw) {
+    let clean = raw || "";
+
+    clean = stripMarkdownFences(clean);
+    clean = removeJunkBeforeAfterJson(clean);
+    clean = normalizeUnicode(clean);
+    clean = fixBackslashes(clean);
+    clean = fixUnclosedStringAtEnd(clean);
+    clean = fixTrailingCommas(clean);
+    clean = balanceBrackets(clean);
+    clean = ensureStringQuotes(clean);
+
+    return clean.trim();
+}
+
+/**
+ * Removes ```json .... ``` wrappers
+ */
+function stripMarkdownFences(str) {
+    return str
+        .replace(/```json/i, "")
+        .replace(/```/g, "")
+        .trim();
+}
+
+/**
+ * Removes text before or after the first and last braces
+ */
+function removeJunkBeforeAfterJson(str) {
+    const first = str.indexOf("{");
+    const last = str.lastIndexOf("}");
+    if (first === -1 || last === -1) return str;
+    return str.slice(first, last + 1);
+}
+
+/**
+ * Normalizes Unicode that often breaks parsers
+ */
+function normalizeUnicode(str) {
+    return str.normalize("NFC");
+}
+
+/**
+ * Fixes backslashes NOT followed by valid escapes
+ */
+function fixBackslashes(str) {
+    return str.replace(/\\(?!["\\/bfnrtu])/g, "\\\\");
+}
+
+/**
+ * Fixes the classic AI bug: missing ending quote before final }
+ */
+function fixUnclosedStringAtEnd(str) {
+    // Case: ...text.}
+    if (/[^"]\}$/.test(str)) {
+        return str.replace(/\}$/, '"}');
+    }
+    return str;
+}
+
+/**
+ * Fix trailing commas (very common in AI output)
+ */
+function fixTrailingCommas(str) {
+    return str
+        .replace(/,\s*([}\]])/g, "$1"); // remove commas before } or ]
+}
+
+/**
+ * Attempts to balance brackets if AI dropped the last one
+ */
+function balanceBrackets(str) {
+    const open = (str.match(/\{/g) || []).length;
+    const close = (str.match(/\}/g) || []).length;
+
+    if (open > close) {
+        return str + "}".repeat(open - close);
+    }
+    return str;
+}
+
+/**
+ * Ensures all object keys have quotes: {title: "x"} → {"title": "x"}
+ */
+function ensureStringQuotes(str) {
+    return str.replace(
+        /([,{]\s*)([A-Za-z0-9_]+)(\s*:\s*)/g,
+        '$1"$2"$3'
+    );
 }
 
 // ==========================================================
@@ -194,10 +288,10 @@ class PipelineManager {
 
             try {
                 const content = await fs.readFile(inputPath, 'utf-8');
-                const data = JSON.parse(content);
+                const data = JSON5.parse(content);
                 
                 // Generate summary
-                const { title, language, summaryBody, client, model, rawContent } = await this._callAI(data.transcript);
+                const { title, language, summaryBody, client, model, rawContent, fullContent } = await this._callAI(data.transcript);
 
                 data.title = title;
                 data.language = language;
@@ -206,6 +300,7 @@ class PipelineManager {
                 data.client = client;
                 data.summaryDate = new Date().toISOString();
                 data.rawContent = rawContent
+                data.fullContent = fullContent;
 
                 // Create final Markdown content
                 const mdContent = `# ${title}
@@ -229,19 +324,30 @@ ${summaryBody}`;
         }
     }
 
+    extractJsonBlock(raw) {
+        if (!raw) return raw;
+
+        const match = raw.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+        return match ? match[1].trim() : raw.trim();
+    }
+
+
     async _callAI(transcript) {
         const prompt = `Analyze the following YouTube transcript and respond EXCLUSIVELY with a valid JSON object—no additional text, explanations, or formatting before or after.
             The JSON must contain EXACTLY these fields:
             - "title": a string with the most likely video title inferred from the transcript.
             - "language": a string indicating the original language detected (e.g., "Spanish", "English", etc.).
             - "model_used": a string (use "deepseek" for this context).
-            - "content": a string containing a comprehensive summary in Markdown format (use headings, bullet points, bold text, etc.), written in the same language as the transcript—no translation.
-
+            - "content": a string containing a summary that is strictly grounded in the transcript—do not invent, assume, or add external information. The summary must be exhaustive, highlight key points, main arguments, and conclusions explicitly stated in the transcript, and include only those explanations or examples that appear verbatim or are directly paraphrased from the source. Use Markdown formatting (headings, bullet lists, bold text) to enhance readability and ensure a clear, well-structured output ${OVERRIDE_LANG ? "writeen in " + OVERRIDE_LANG : " written in the same language as the transcript—no translation."}
+            - "full_content": a string containing a narrative-style retelling of the entire transcript, as if someone were clearly and coherently describing what happens in the video. If the transcript includes an interview, dialogue, or multiple speakers, preserve the exact questions and answers (or close paraphrasing only when speaker labels are unclear), presented in a natural storytelling flow. Do not add interpretation, commentary, or invented details—only restructure the transcript’s explicit content into a readable narrative. ${OVERRIDE_LANG ? "writeen in " + OVERRIDE_LANG : " Write in the same language as the transcript."} 
+            
             Strict rules:
+            - Do NOT include opinions, interpretations, or inferred claims not present in the transcript.
             - Do NOT wrap the JSON in code blocks (e.g., no \`\`\`json).
             - Do NOT add comments, prefixes, or suffixes.
             - The output must be parseable with JSON.parse().
             - The "content" field must be a single Markdown-formatted string.
+            - The "full_content" field must be a single Markdown-formatted string.
 
             TRANSCRIPT:
             ---
@@ -251,16 +357,16 @@ ${summaryBody}`;
         const { client, model, rawContent } = await this.aiClient.generateContent(prompt);
 
         // Clean common artifacts (e.g., if model wraps response in ```json ... ```)
-        let cleanedJson = rawContent
-            .replace(/^```json\s*/i, '')
-            .replace(/^```\s*$/gm, '')
-            .trim();
+
+        const cleanedJson = this.extractJsonBlock(healAIJson(rawContent));
 
         let parsed;
         try {
-            parsed = JSON.parse(cleanedJson);
+            parsed = JSON5.parse(cleanedJson);
         } catch (e) {
-            console.error("❌ Failed to parse AI response as JSON:", cleanedJson);
+            console.error("❌ Failed to parse AI response as JSON cleanedJson:", cleanedJson);
+
+            console.error("❌ Failed to parse AI response as JSON rawContent:", rawContent);
             // Fallback to avoid crashing
             return {
                 title: "Error: Invalid JSON",
@@ -277,6 +383,7 @@ ${summaryBody}`;
             language: parsed.language || "Unknown",
             model: parsed.model_used || model,
             summaryBody: parsed.content || "",
+            fullContent: parsed.full_content || "",
             rawContent,
             client
         };
@@ -327,7 +434,7 @@ ${summaryBody}`;
                     throw new Error(`Missing JSON metadata file: ${jsonPath}`);
                 }
 
-                const jsonData = JSON.parse(await fs.readFile(jsonPath, 'utf-8'));
+                const jsonData = JSON5.parse(await fs.readFile(jsonPath, 'utf-8'));
 
                 const title = jsonData.title || "YouTube Summary";
                 const videoId = jsonData.videoId;
@@ -336,6 +443,7 @@ ${summaryBody}`;
 
                 // 3) Convert Markdown → HTML
                 const bodyHtml = marked(jsonData.markdown);
+                const fullContentHtml = marked(jsonData.fullContent);
 
                 // 4) Build HTML Email
                 const finalHtml = `
@@ -363,6 +471,12 @@ ${summaryBody}`;
             </div>
 
             ${bodyHtml}
+
+            <div style="text-align: left; margin-bottom: 20px;">
+                <h2>Contenido completo</h2>
+            </div>
+
+            ${fullContentHtml}
 
             <p style="font-size: 12px; color: #777; margin-top: 40px;">
                 Generated automatically — Video ID: ${videoId} Model: ${jsonData.model || 'N/A'} Client: ${jsonData.client || 'N/A'}
@@ -409,7 +523,7 @@ ${summaryBody}`;
 async function main() {
     // 1. Configure AI
     // Options: 'deepseek', 'qwen', 'gemini', 'lmstudio'
-    const provider = 'lmstudio'; 
+    const provider = 'gemini'; 
     const aiClient = createAiClient(provider);
     const pipeline = new PipelineManager(aiClient);
 
@@ -504,3 +618,4 @@ Examples:
 }
 
 main().catch(console.error);
+
