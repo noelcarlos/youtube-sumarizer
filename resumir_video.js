@@ -46,9 +46,9 @@ const LMSTUDIO_MODEL_NAME = "openai/gpt-oss-20b";
 const EMAIL_USER = "david.rey.1040@gmail.com";
 const EMAIL_PASS = process.env.EMAIL_PASS;
 const EMAIL_TO = "noel.carlos@gmail.com"; 
-//const EMAIL_BCC = "kl2053258@gmail.com";
+const EMAIL_BCC = "kl2053258@gmail.com";
 //const EMAIL_BCC = "kl2053258@gmail.com,manuelvargash95@gmail.com";
-const EMAIL_BCC = "";
+//const EMAIL_BCC = "";
 const OVERRIDE_LANG = "Español"; // Set to null to auto-detect
 
 // ==========================================================
@@ -331,34 +331,191 @@ ${summaryBody}`;
         return match ? match[1].trim() : raw.trim();
     }
 
+    chunkTranscript(text, maxChars = 8000) {
+        const paragraphs = text.split('\n\n');
+        const chunks = [];
+
+        let current = '';
+
+        for (const p of paragraphs) {
+            const candidate = current
+                ? current + '\n\n' + p
+                : p;
+
+            if (candidate.length > maxChars) {
+                if (current.trim().length > 0) {
+                    chunks.push(current.trim());
+                }
+                current = p;
+            } else {
+                current = candidate;
+            }
+        }
+
+        if (current.trim().length > 0) {
+            chunks.push(current.trim());
+        }
+
+        return chunks;
+    }
+
+    buildChunkPrompt(chunk, index, total) {
+        return `
+            You are an expert Editor and Translator. You are processing PART ${index} of ${total}.
+
+            ### GOAL
+            Produce a **clean, native Spanish version** of the text, formatted with Markdown for readability.
+
+            ### CRITICAL RULE: NO INTERLEAVING
+            - **NEVER** output the original English text.
+            - **NEVER** output "English text (Spanish translation)".
+            - **REPLACE** the original text entirely with Spanish.
+            - The audience speaks **ONLY SPANISH**.
+
+            ### MARKDOWN FORMATTING RULES (Apply inside the "content" field):
+            1. **Paragraphs & Dialogues:** You MUST use double line breaks (\n\n) to visually separate paragraphs and different speakers.
+            2. **Emphasis:** Use **bold** (double asterisks) for key terms, emphasized words, or loud speech found in the source.
+            3. **Structure:** Do not create big blocks of text. Break it down so it is easy to read.
+
+            ### OUTPUT FORMAT (Strict JSON):
+            Return ONLY a single valid JSON object. No code blocks. No intro text.
+            Ensure the "content" string is properly escaped for JSON if necessary.
+
+            {
+                "chunk_index": ${index},
+                "content": "Aquí va la traducción completa en Español formato MARKDOWN MANDATORY.\\n\\nUsa saltos de línea para separar párrafos.\\n\\nUsa **negrita** para resaltar ideas clave."
+            }
+
+            ### INPUT TEXT:
+            ${chunk}
+        `.trim();
+    }
+
+    async processChunks(chunks) {
+        const results = [];
+
+        for (let i = 0; i < chunks.length; i++) {
+            const prompt = this.buildChunkPrompt(chunks[i], i + 1, chunks.length);
+            const { client, model, rawContent } = await this.aiClient.generateContent(prompt);
+
+            console.log(`   Processed chunk ${i + 1}/${chunks.length} ...`);
+
+            //console.log(rawContent);
+
+            const parsed = JSON5.parse(rawContent);
+
+            // console.log(rawContent);
+
+            // console.log(`   Processed chunk ${i + 1}/${chunks.length}: ${parsed.content.substring(0, 120)}.`);
+
+            results.push({
+                index: parsed.chunk_index,
+                content: parsed.content
+            });
+        }
+
+        return results;
+    }
+
+    assembleFullContent(chunkResults) {
+        return chunkResults
+            .sort((a, b) => a.index - b.index)
+            .map(c => c.content.trim())
+            .join('\n\n');
+    }
+
+    async buildRawTranscript(rawTranscript) {
+        //const normalized = normalizeTranscript(rawTranscript);
+        //const withSpeakers = detectSpeakers(normalized);
+        const chunks = this.chunkTranscript(rawTranscript);
+
+        const chunkResults = await this.processChunks(chunks);
+        const fullContent = this.assembleFullContent(chunkResults);
+
+        //const finalPrompt = buildFinalPrompt(fullContent);
+        //const finalResponse = await callLLM(finalPrompt);
+
+        return fullContent; //JSON.parse(finalResponse);
+    }
+
+    extractStrict(raw) {
+        const match = raw.match(/BEGIN_JSON\s*([\s\S]*?)\s*END_JSON/);
+        if (!match) {
+            throw new Error("Invalid AI output: missing JSON delimiters");
+        }
+        return match[1].trim();
+    }
 
     async _callAI(transcript) {
-        const prompt = `Analyze the following YouTube transcript and respond EXCLUSIVELY with a valid JSON object—no additional text, explanations, or formatting before or after.
-            The JSON must contain EXACTLY these fields:
-            - "title": a string with the most likely video title inferred from the transcript.
-            - "language": a string indicating the original language detected (e.g., "Spanish", "English", etc.).
-            - "model_used": a string (use "deepseek" for this context).
-            - "content": a string containing a summary that is strictly grounded in the transcript—do not invent, assume, or add external information. The summary must be exhaustive, highlight key points, main arguments, and conclusions explicitly stated in the transcript, and include only those explanations or examples that appear verbatim or are directly paraphrased from the source. Use Markdown formatting (headings, bullet lists, bold text) to enhance readability and ensure a clear, well-structured output ${OVERRIDE_LANG ? "writeen in " + OVERRIDE_LANG : " written in the same language as the transcript—no translation."}
-            - "full_content": a string containing a narrative-style retelling of the entire transcript, as if someone were clearly and coherently describing what happens in the video. If the transcript includes an interview, dialogue, or multiple speakers, preserve the exact questions and answers (or close paraphrasing only when speaker labels are unclear), presented in a natural storytelling flow. Do not add interpretation, commentary, or invented details—only restructure the transcript’s explicit content into a readable narrative. ${OVERRIDE_LANG ? "writeen in " + OVERRIDE_LANG : " Write in the same language as the transcript."} 
-            
-            Strict rules:
-            - Do NOT include opinions, interpretations, or inferred claims not present in the transcript.
-            - Do NOT wrap the JSON in code blocks (e.g., no \`\`\`json).
-            - Do NOT add comments, prefixes, or suffixes.
-            - The output must be parseable with JSON.parse().
-            - The "content" field must be a single Markdown-formatted string.
-            - The "full_content" field must be a single Markdown-formatted string.
+
+        const prompt = `
+            You are an automated system producing machine-readable output.
+
+            You MUST return exactly ONE JSON object.
+            The JSON MUST be enclosed between the delimiters BEGIN_JSON and END_JSON.
+            No text is allowed before BEGIN_JSON or after END_JSON.
+
+            The JSON object MUST strictly conform to schema:
+            - Name: YouTubeTranscriptAnalysis
+            - Version: 1.0
+            - additionalProperties: false
+
+            The JSON object MUST contain EXACTLY these fields, with the following meaning:
+
+            - "schema_version":
+            string, MUST be exactly "1.0".
+
+            - "title":
+            string containing the most likely video title inferred strictly from the transcript.
+            Do NOT invent titles unrelated to the transcript.
+
+            - "language":
+            string indicating the original language detected in the transcript
+            (e.g., "Spanish", "English", "French").
+
+            - "model_used":
+            string identifying the model used.
+
+            - "content":
+            string containing an exhaustive, structured summary strictly grounded in the transcript.
+            Do NOT invent, assume, or add external information. Never use double quotes , use sigle quotes for emphasis.
+            Highlight key points, main arguments, and conclusions explicitly stated in the transcript.
+            Include only explanations or examples that appear verbatim or are directly paraphrased.
+            Use Markdown formatting (headings, bullet lists, bold text) inside the string to improve readability.
+            ${OVERRIDE_LANG
+                ? `Write in ${OVERRIDE_LANG}.`
+                : `Write in the same language as the transcript. Do NOT translate.`}
+
+            Rules:
+            - Do NOT include comments.
+            - Do NOT include trailing commas.
+            - Do NOT wrap the JSON in Markdown or code fences.
+            - Do NOT include explanations or extra text.
+            - The output MUST be parseable using JSON.parse().
+            - If you cannot fully comply, return NOTHING.
+
+            BEGIN_JSON
+            {
+            "schema_version": "1.0",
+            "title": "",
+            "language": "",
+            "model_used": "deepseek",
+            "content": ""
+            }
+            END_JSON
 
             TRANSCRIPT:
             ---
             ${transcript}
-            ---`;
+            ---
+            `;
+
 
         const { client, model, rawContent } = await this.aiClient.generateContent(prompt);
 
         // Clean common artifacts (e.g., if model wraps response in ```json ... ```)
 
-        const cleanedJson = this.extractJsonBlock(healAIJson(rawContent));
+        const cleanedJson = this.extractStrict(rawContent);
 
         let parsed;
         try {
@@ -378,12 +535,14 @@ ${summaryBody}`;
             };
         }
 
+        const fullContent = await this.buildRawTranscript(transcript) || ""
+
         return {
             title: parsed.title || "Untitled Video",
             language: parsed.language || "Unknown",
             model: parsed.model_used || model,
             summaryBody: parsed.content || "",
-            fullContent: parsed.full_content || "",
+            fullContent: fullContent,
             rawContent,
             client
         };
@@ -443,7 +602,9 @@ ${summaryBody}`;
 
                 // 3) Convert Markdown → HTML
                 const bodyHtml = marked(jsonData.markdown);
-                const fullContentHtml = marked(jsonData.fullContent);
+
+                console.log(`   fullContent for: ${jsonData.fullContent.substring(0, 120)}...`, );
+                const fullContentHtml = marked(jsonData.fullContent + "\n\n");
 
                 // 4) Build HTML Email
                 const finalHtml = `
@@ -505,7 +666,7 @@ ${summaryBody}`;
                 console.log(`   ✅ Email sent & saved to DONE: ${htmlFilename}`);
 
             } catch (error) {
-                console.error(`   ❌ Error sending ${file}: ${error.message}`);
+                console.error(`   ❌ Error sending ${file}: ${error.message}`, error);
             }
         }
     }
@@ -523,7 +684,7 @@ ${summaryBody}`;
 async function main() {
     // 1. Configure AI
     // Options: 'deepseek', 'qwen', 'gemini', 'lmstudio'
-    const provider = 'gemini'; 
+    const provider = 'lmstudio'; 
     const aiClient = createAiClient(provider);
     const pipeline = new PipelineManager(aiClient);
 
