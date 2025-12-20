@@ -19,25 +19,55 @@ dotenv.config();
 // ==========================================================
 
 // --- PIPELINE DIRECTORIES ---
-const BASE_DIR = './pipeline-data';
-const DIRS = {
-    RAW: path.join(BASE_DIR, '1-transcripts'),      // Input for AI
-    SUMMARY: path.join(BASE_DIR, '2-summaries'),        // Input for Email
-    DONE_RAW: path.join(BASE_DIR, '3-done', 'raw'),       // Archived raw files
-    DONE_SUMMARY: path.join(BASE_DIR, '3-done', 'sent')   // Archived sent files
+const BASE = './pipeline-data';
+
+export const DIRS = {
+  // ======================================================
+  // STAGE 1 — DOWNLOAD
+  // ======================================================
+  DOWNLOAD: {
+    OUTPUT: path.join(BASE, 'download/output'),
+    ERROR: path.join(BASE, 'download/error')
+  },
+
+  // ======================================================
+  // STAGE 2 — SUMMARY
+  // ======================================================
+  SUMMARY: {
+    INPUT: path.join(BASE, 'summary/input'),
+    OUTPUT: path.join(BASE, 'summary/output'),
+    ERROR: path.join(BASE, 'summary/error')
+  },
+
+  // ======================================================
+  // STAGE 3 — EMAIL
+  // ======================================================
+  EMAIL: {
+    INPUT: path.join(BASE, 'email/input'),
+    OUTPUT: path.join(BASE, 'email/output'),
+    ERROR: path.join(BASE, 'email/error')
+  },
+
+  // ======================================================
+  // FINAL / SYSTEM
+  // ======================================================
+  DONE: path.join(BASE, 'done'),
+  EVENTS: path.join(BASE, 'events')
 };
+
+const EVENT_LOG = path.join(DIRS.EVENTS, 'events.log');
 
 // --- API KEYS ---
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY; // REPLACE THIS
-const GEMINI_MODEL = "gemini-2.5-flash-lite"; 
+const GEMINI_MODEL = "gemini-2.5-flash-lite";
 
-const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY; 
-const DEEPSEEK_BASE_URL = "https://api.deepseek.com/v1"; 
+const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY;
+const DEEPSEEK_BASE_URL = "https://api.deepseek.com/v1";
 const DEEPSEEK_MODEL = "deepseek-chat";
 
 const LMSTUDIO_API_KEY = process.env.LMSTUDIO_API_KEY;
-const LMSTUDIO_BASE_URL = "http://localhost:1234/v1"; 
-const LMSTUDIO_MODEL_NAME = "openai/gpt-oss-20b"; 
+const LMSTUDIO_BASE_URL = "http://localhost:1234/v1";
+const LMSTUDIO_MODEL_NAME = "openai/gpt-oss-20b";
 // const LMSTUDIO_MODEL_NAME = "qwen2.5-14b-instruct-mlx"; 
 //const LMSTUDIO_MODEL_NAME = "deepseek/deepseek-r1-0528-qwen3-8b"; 
 // // "qwen2.5-14b-instruct-mlx"; // "mistralai/mistral-7b-instruct-v0.3"; // "openai/gpt-oss-20b"; // "deepseek-r1-distill-qwen-7b"; 
@@ -45,7 +75,7 @@ const LMSTUDIO_MODEL_NAME = "openai/gpt-oss-20b";
 // --- EMAIL CONFIG ---
 const EMAIL_USER = "david.rey.1040@gmail.com";
 const EMAIL_PASS = process.env.EMAIL_PASS;
-const EMAIL_TO = "noel.carlos@gmail.com"; 
+const EMAIL_TO = "noel.carlos@gmail.com";
 const EMAIL_BCC = "kl2053258@gmail.com";
 //const EMAIL_BCC = "kl2053258@gmail.com,manuelvargash95@gmail.com";
 //const EMAIL_BCC = "";
@@ -69,7 +99,7 @@ class GeminiClient extends IModelClient {
         const response = await this.ai.models.generateContent({
             model: this.modelName, contents: promptContent,
         });
-        return { client: "Gemini", model: this.modelName, rawContent: response.text } 
+        return { client: "Gemini", model: this.modelName, rawContent: response.text }
     }
 }
 
@@ -85,7 +115,7 @@ class OpenAICompatibleClient extends IModelClient {
             messages: [{ role: "user", content: promptContent }],
             temperature: 0.1,
         });
-        return { client: "OpenAI", model: this.modelName, rawContent: response.choices[0].message.content } 
+        return { client: "OpenAI", model: this.modelName, rawContent: response.choices[0].message.content }
     }
 }
 
@@ -103,7 +133,7 @@ class LMStudioClient extends IModelClient {
         });
         let content = response.choices[0].message.content;
         let rawContent = content = content.replace(/<think>[\s\S]*?<\/think>\s*/g, '') // Clean "think" tags
-        return { client: "LMStudio", model: this.modelName, rawContent: rawContent } 
+        return { client: "LMStudio", model: this.modelName, rawContent: rawContent }
     }
 }
 
@@ -211,33 +241,155 @@ function ensureStringQuotes(str) {
 // SECTION 2: PIPELINE MANAGER
 // ==========================================================
 
-class PipelineManager {
-    constructor(aiClient) {
-        this.aiClient = aiClient;
+async function initDirs() {
+  const mkdirRecursive = async (node) => {
+    if (typeof node === 'string') {
+      await fs.mkdir(node, { recursive: true });
+      return;
     }
 
-    // --- UTILITIES ---
+    if (typeof node === 'object' && node !== null) {
+      for (const value of Object.values(node)) {
+        await mkdirRecursive(value);
+      }
+    }
+  };
 
-    async initDirs() {
-        for (const dir of Object.values(DIRS)) {
-            await fs.mkdir(dir, { recursive: true });
+  await mkdirRecursive(DIRS);
+}
+
+class EventLogger {
+    async log(event) {
+        const line = JSON.stringify({
+            timestamp: new Date().toISOString(),
+            ...event
+        }) + '\n';
+
+        await fs.appendFile(EVENT_LOG, line);
+    }
+}
+
+class StateMachine {
+    constructor(logger) {
+        this.logger = logger;
+    }
+
+    transitions = {
+        DOWNLOADED: ['EMAIL_PENDING', 'SUMMARY_ERROR'],
+        SUMMARY_ERROR: ['SUMMARY_PENDING'],
+        EMAIL_PENDING: ['DONE', 'EMAIL_ERROR'],
+        EMAIL_ERROR: ['EMAIL_PENDING']
+    };
+
+    dirFor(state, videoId = null) {
+        const map = {
+            DOWNLOADED: DIRS.DOWNLOADED,
+            SUMMARY_PENDING: DIRS.SUMMARY_PENDING,
+            SUMMARY_ERROR: DIRS.SUMMARY_ERROR,
+            EMAIL_PENDING: DIRS.EMAIL_PENDING,
+            EMAIL_ERROR: DIRS.EMAIL_ERROR,
+            DONE: path.join(DIRS.DONE, videoId)
+        };
+        return map[state];
+    }
+
+    async transition({ videoId, from, to, filePath, stage, status, message }) {
+        if (!this.transitions[from]?.includes(to)) {
+            throw new Error(`Invalid transition ${from} → ${to}`);
         }
+
+        const targetDir = this.dirFor(to, videoId);
+        await fs.mkdir(targetDir, { recursive: true });
+
+        const targetPath = path.join(targetDir, path.basename(filePath));
+        await fs.rename(filePath, targetPath);
+
+        await this.logger.log({
+            videoId,
+            from,
+            to,
+            stage,
+            status,
+            message
+        });
+
+        return targetPath;
+    }
+}
+
+class BaseStage {
+  constructor({ name, inputDir, outputDir, errorDir, logger }) {
+    this.name = name;
+    this.inputDir = inputDir;
+    this.outputDir = outputDir;
+    this.errorDir = errorDir;
+    this.logger = logger;
+  }
+
+  async listInputs(filterFn = () => true) {
+    const files = await fs.readdir(this.inputDir);
+    return files.filter(filterFn);
+  }
+
+    async logSuccess(inputPaths = [], outputPaths = []) {
+        // 1️⃣ consume TODOS los inputs
+        await Promise.all(
+            inputPaths.map(p => fs.unlink(p).catch(() => {}))
+        );
+
+        await this.logger.log({
+            stage: this.name,
+            status: 'SUCCESS',
+            inputs: inputPaths.map(p => path.basename(p)),
+            outputs: outputPaths.map(p => path.basename(p)),
+            ts: new Date().toISOString()
+        });
     }
 
-    extractVideoId(urlString) {
-        try {
-            const url = new URL(urlString);
-            if (url.hostname.includes('youtube.com') && url.searchParams.has('v')) return url.searchParams.get('v');
-            if (url.hostname.includes('youtu.be')) return url.pathname.substring(1);
-        } catch (e) { return null; }
-        return null;
+    async moveToError(inputPaths = [], err) {
+        await fs.mkdir(this.errorDir, { recursive: true });
+
+        await Promise.all(
+            inputPaths.map(p => {
+                const dest = path.join(this.errorDir, path.basename(p));
+                return fs.rename(p, dest).catch(() => {});
+            })
+        );
+
+        await this.logger.log({
+            stage: this.name,
+            status: 'ERROR',
+            inputs: inputPaths.map(p => path.basename(p)),
+            error: err.message,
+            ts: new Date().toISOString()
+        });
+    }
+}
+
+
+// ==========================================================
+// STAGE 1 — DOWNLOAD
+// ==========================================================
+class DownloadStage extends BaseStage {
+    constructor(logger) {
+        super({
+            name: 'download',
+            inputDir: null, // CLI
+            outputDir: DIRS.DOWNLOAD.OUTPUT,
+            errorDir: DIRS.DOWNLOAD.ERROR,
+            logger
+        });
     }
 
-    // --- STAGE 1: DOWNLOAD (YouTube -> JSON in RAW folder) ---
+    extractVideoId(url) {
+        const u = new URL(url);
+        if (u.hostname.includes('youtu.be')) return u.pathname.slice(1);
+        return u.searchParams.get('v');
+    }
 
-    async stageDownload(url) {
+    async execute(url) {
         console.log(`\n🔵 [STAGE 1] Downloading content: ${url}`);
-        
+
         const videoId = this.extractVideoId(url);
         if (!videoId) {
             console.error(`❌ Invalid URL: ${url}`);
@@ -257,71 +409,44 @@ class PipelineManager {
                 transcript: transcriptText
             };
 
+            const outPath = path.join(this.outputDir, `${videoId}.json`);
+
             // Save to RAW folder
-            const filePath = path.join(DIRS.RAW, `${videoId}.json`);
-            await fs.writeFile(filePath, JSON.stringify(data, null, 2));
-            
-            console.log(`✅ Saved to: ${filePath}`);
-            return videoId; 
+            await fs.writeFile(
+                outPath,
+                JSON.stringify(data, null, 2)
+            );
+
+            // await fs.writeFile(filePath, JSON.stringify(data, null, 2));
+
+            await this.logSuccess([], [outPath]);
 
         } catch (error) {
-            console.error(`❌ Error downloading: ${error.message}`);
+            console.error(`❌ Error downloading: ${error.message}`, error);
+            const errPath = path.join(this.errorDir, `${videoId}.json`);
+            await fs.writeFile(errPath, JSON.stringify({ videoId, error: error.message }));
+            throw err;
         }
     }
+}
 
-    // --- STAGE 2: SUMMARIZE (RAW folder -> MD in SUMMARY folder) ---
+function extractVideoIdFromPath(filePath) {
+    const base = path.basename(filePath);
 
-    async stageSummarize() {
-        console.log(`\n🟣 [STAGE 2] Searching for files to summarize in: ${DIRS.RAW}`);
-        
-        const files = await fs.readdir(DIRS.RAW);
-        const jsonFiles = files.filter(f => f.endsWith('.json'));
+    // soporta: videoId.json, videoId.raw.json, videoId.anything.json
+    return base.split('.')[0];
+}
 
-        if (jsonFiles.length === 0) {
-            console.log("⚠️ No pending files to summarize.");
-            return;
-        }
-
-        for (const file of jsonFiles) {
-            const inputPath = path.join(DIRS.RAW, file);
-            console.log(`   Processing: ${file}...`);
-
-            try {
-                const content = await fs.readFile(inputPath, 'utf-8');
-                const data = JSON5.parse(content);
-                
-                // Generate summary
-                const { title, language, summaryBody, client, model, rawContent, fullContent } = await this._callAI(data.transcript);
-
-                data.title = title;
-                data.language = language;
-                data.markdown = summaryBody;
-                data.model = model;
-                data.client = client;
-                data.summaryDate = new Date().toISOString();
-                data.rawContent = rawContent
-                data.fullContent = fullContent;
-
-                // Create final Markdown content
-                const mdContent = `# ${title}
-
-${summaryBody}`;
-
-                // Save to SUMMARY folder
-                const outputFileName = `${data.videoId}-${data.summaryDate}.md`;
-                await fs.writeFile(path.join(DIRS.SUMMARY, outputFileName), mdContent);
-                
-                await fs.unlink(inputPath);
-
-                // Move original file to DONE_RAW
-                await fs.writeFile(path.join(DIRS.DONE_RAW, `${data.videoId}-${data.summaryDate}.json`), JSON.stringify(data, null, 2));
-
-                console.log(`   ✅ Summarized and saved: ${outputFileName}`);
-
-            } catch (error) {
-                console.error(`   ❌ Error processing ${file}: ${error.message}`);
-            }
-        }
+class SummarizeStage extends BaseStage {
+    constructor(aiClient, logger) {
+        super({
+        name: 'summarize',
+        inputDir: DIRS.SUMMARY.INPUT,
+        outputDir: DIRS.SUMMARY.OUTPUT,
+        errorDir: DIRS.SUMMARY.ERROR,
+        logger
+        });
+        this.aiClient = aiClient;
     }
 
     extractJsonBlock(raw) {
@@ -548,66 +673,128 @@ ${summaryBody}`;
         };
     }
 
+    async execute(filePath) {
 
-    async _printToConsole(finalContent) {
-        console.log('\n==============================================');
-        console.log('               RESUMEN GENERADO (Consola)     ');
-        console.log('==============================================');
-        console.log(finalContent);
-        console.log('==============================================');
-    }
-    // --- STAGE 3: EMAIL (SUMMARY folder -> Email -> DONE_SUMMARY folder) ---
+        const videoId = extractVideoIdFromPath(filePath);
 
-    // --- STAGE 3: EMAIL (SUMMARY folder -> Email -> Save HTML to DONE) ---
+        try {
+            //const inputPath = path.join(DIRS.RAW, file);
+            console.log(`   Processing: ${filePath}...`);
 
-    async stageEmail() {
-        console.log(`\n🟠 [STAGE 3] Searching for summaries to send in: ${DIRS.SUMMARY}`);
+            const content = await fs.readFile(filePath, 'utf-8');
+            const data = JSON5.parse(content);
 
-        const files = await fs.readdir(DIRS.SUMMARY);
-        const mdFiles = files.filter(f => f.endsWith('.md'));
+            // sanity check (opcional pero recomendado)
+            if (data.videoId && data.videoId !== videoId) {
+                console.warn(
+                    `⚠️ videoId mismatch: filename=${videoId}, json=${data.videoId}`
+                );
+            }
 
-        if (mdFiles.length === 0) {
-            console.log("⚠️ No summaries pending for email.");
-            return;
+            // Generate summary
+            const { title, language, summaryBody, client, model, rawContent, fullContent } = await this._callAI(data.transcript);
+
+            data.title = title;
+            data.language = language;
+            data.markdown = summaryBody;
+            data.model = model;
+            data.client = client;
+            data.summaryDate = new Date().toISOString();
+            data.rawContent = rawContent
+            data.fullContent = fullContent;
+
+            // Create final Markdown content
+            const mdContent = `# ${title}
+
+        ${summaryBody}`;
+
+            const enrichedData = {
+                ...data,
+                title,
+                language,
+                markdown: summaryBody,
+                model,
+                client,
+                summaryDate: new Date().toISOString(),
+                rawContent,
+                fullContent
+            };
+
+            // --- outputs ---
+            const jsonOut = path.join(this.outputDir, `${videoId}.enriched.json`);
+            const mdOut = path.join(this.outputDir, `${videoId}.summary.md`);
+
+            await Promise.all([
+                fs.writeFile(jsonOut, JSON.stringify(enrichedData, null, 2)),
+                fs.writeFile(mdOut, `# ${title}\n\n${summaryBody}`)
+            ]);
+
+            await this.logSuccess([filePath], [jsonOut, mdOut]);
+
+        } catch (err) {
+            console.error(`   ❌ Error processing ${filePath}: ${err.message}`, err);
+            await this.moveToError([filePath], err);
         }
+    }
+}
+
+class EmailStage extends BaseStage {
+    constructor(logger) {
+        super({
+        name: 'email',
+        inputDir: DIRS.EMAIL.INPUT,
+        outputDir: DIRS.EMAIL.OUTPUT,
+        errorDir: DIRS.EMAIL.ERROR,
+        logger
+        });
+
+        this.transporter = nodemailer.createTransport({
+        service: 'gmail',
+        auth: { user: EMAIL_USER, pass: EMAIL_PASS }
+        });
+    }
+
+    async execute(anchorPath) {
+        const videoId = extractVideoIdFromPath(anchorPath);
+
+        const enrichedJsonPath = path.join(
+            this.inputDir,
+            `${videoId}.enriched.json`
+        );
+
+        const mdPath = path.join(
+            this.inputDir,
+            `${videoId}.summary.md`
+        );
 
         const transporter = nodemailer.createTransport({
             service: 'gmail',
             auth: { user: EMAIL_USER, pass: EMAIL_PASS }
         });
 
-        for (const file of mdFiles) {
-            const filePath = path.join(DIRS.SUMMARY, file);
-            const jsonPath = path.join(DIRS.DONE_RAW, file.replace('.md', '.json'));
+        try {
+            // --- cargar inputs ---
+            const [enrichedJson, markdown] = await Promise.all([
+                fs.readFile(enrichedJsonPath, 'utf-8'),
+                fs.readFile(mdPath, 'utf-8')
+            ]);
 
-            console.log(`   Processing: ${file}...`);
+            const enrichedData = JSON5.parse(enrichedJson);
 
-            try {
-                // 1) Load Markdown Content
-                const mdContent = await fs.readFile(filePath, 'utf-8');
+            const title = enrichedData.title || 'YouTube Summary';
 
-                // 2) Load JSON Metadata (title, language, videoId, etc.)
-                const jsonExists = await fs.access(jsonPath).then(() => true).catch(() => false);
+            // --- render and send HTML ---
+            const thumbnailUrl = `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg`;
+            const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
 
-                if (!jsonExists) {
-                    throw new Error(`Missing JSON metadata file: ${jsonPath}`);
-                }
+            // 3) Convert Markdown → HTML
+            const bodyHtml = marked(enrichedData.markdown);
 
-                const jsonData = JSON5.parse(await fs.readFile(jsonPath, 'utf-8'));
+            // console.log(`   fullContent for: ${enrichedData.fullContent.substring(0, 120)}...`,);
+            const fullContentHtml = marked(enrichedData.fullContent + "\n\n");
 
-                const title = jsonData.title || "YouTube Summary";
-                const videoId = jsonData.videoId;
-                const thumbnailUrl = `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg`;
-                const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
-
-                // 3) Convert Markdown → HTML
-                const bodyHtml = marked(jsonData.markdown);
-
-                console.log(`   fullContent for: ${jsonData.fullContent.substring(0, 120)}...`, );
-                const fullContentHtml = marked(jsonData.fullContent + "\n\n");
-
-                // 4) Build HTML Email
-                const finalHtml = `
+            // 4) Build HTML Email
+            const finalHtml = `
     <!DOCTYPE html>
     <html>
     <head>
@@ -640,42 +827,46 @@ ${summaryBody}`;
             ${fullContentHtml}
 
             <p style="font-size: 12px; color: #777; margin-top: 40px;">
-                Generated automatically — Video ID: ${videoId} Model: ${jsonData.model || 'N/A'} Client: ${jsonData.client || 'N/A'}
+                Generated automatically — Video ID: ${videoId} Model: ${enrichedData.model || 'N/A'} Client: ${enrichedData.client || 'N/A'}
             </p>
         </div>
     </body>
     </html>
                 `;
 
-                // 5) Send email
-                await transporter.sendMail({
-                    from: EMAIL_USER,
-                    to: EMAIL_TO,
-                    bcc: EMAIL_BCC,
-                    subject: `[SUMMARY] ${title}`,
-                    html: finalHtml
-                });
+            // 5) Send email
+            await transporter.sendMail({
+                from: EMAIL_USER,
+                to: EMAIL_TO,
+                bcc: EMAIL_BCC,
+                subject: `[SUMMARY] ${title}`,
+                html: finalHtml
+            });
 
-                // 6) Save email as HTML
-                const htmlFilename = file.replace('.md', '.html');
-                await fs.writeFile(path.join(DIRS.DONE_SUMMARY, htmlFilename), finalHtml);
+            // --- output ---
+            const out = path.join(this.outputDir, `${videoId}.email.html`);
+            await fs.writeFile(out, finalHtml);
 
-                // 7) Move Markdown to DONE folder
-                await fs.rename(filePath, path.join(DIRS.DONE_RAW, file));
+            await this.logSuccess([enrichedJsonPath, mdPath], [enrichedJsonPath, mdPath, out]);
 
-                console.log(`   ✅ Email sent & saved to DONE: ${htmlFilename}`);
+        } catch (err) {
+            console.error(`❌ Email failed for ${videoId}`, err);
 
-            } catch (error) {
-                console.error(`   ❌ Error sending ${file}: ${error.message}`, error);
-            }
+            await this.moveToError([enrichedJsonPath, mdPath], err);
         }
     }
-
 }
 
-// ==========================================================
-// MAIN EXECUTION
-// ==========================================================
+async function moveOutputs(srcDir, destDir, filterFn) {
+  const files = await fs.readdir(srcDir);
+
+  for (const f of files.filter(filterFn)) {
+    await fs.rename(
+      path.join(srcDir, f),
+      path.join(destDir, f)
+    );
+  }
+}
 
 // ==========================================================
 // MAIN EXECUTION
@@ -684,16 +875,24 @@ ${summaryBody}`;
 async function main() {
     // 1. Configure AI
     // Options: 'deepseek', 'qwen', 'gemini', 'lmstudio'
-    const provider = 'lmstudio'; 
+    const provider = 'lmstudio';
     const aiClient = createAiClient(provider);
-    const pipeline = new PipelineManager(aiClient);
+
+    const logger = new EventLogger();
+    const sm = new StateMachine(logger);
+
+    const downloader = new DownloadStage(logger);
+    const summarizer = new SummarizeStage(aiClient, logger);
+    const emailer = new EmailStage(logger);
+
+    //const pipeline = new PipelineManager(aiClient);
 
     // 2. Initialize directories
-    await pipeline.initDirs();
+    await initDirs();
 
     // 3. Parse Arguments
     const args = process.argv.slice(2);
-    
+
     // Check for explicit flags
     const explicitDownload = args.includes('--download');
     const doSummarize = args.includes('--summarize') || args.includes('--all');
@@ -705,7 +904,7 @@ async function main() {
     // We split by commas to allow: --url "https://y.com/1, https://y.com/2"
     let urlsToProcess = [];
     const urlArgIndex = args.indexOf('--url');
-    
+
     if (urlArgIndex !== -1 && args[urlArgIndex + 1]) {
         const urlRaw = args[urlArgIndex + 1];
         // Split by comma, trim whitespace, and filter out empty strings
@@ -760,7 +959,11 @@ Examples:
             console.log(`\n🔵 [STAGE 1] Processing ${urlsToProcess.length} URL(s)...`);
             // Process URLs sequentially to avoid rate limiting or potential overlapping file I/O issues
             for (const url of urlsToProcess) {
-                await pipeline.stageDownload(url);
+                try {
+                    await downloader.execute(url);
+                } catch (err) {
+                    // Error is logged inside the stage
+                }
             }
         }
     }
@@ -768,15 +971,70 @@ Examples:
     // 2. Stage: Summarize
     // Note: If --all is present or --summarize is present, we run this.
     if (doSummarize) {
-        await pipeline.stageSummarize();
+        console.log(`\n🟣 [STAGE 2] Preparing files for summarization...`);
+
+        // download → summarize
+        await moveOutputs(
+            DIRS.DOWNLOAD.OUTPUT,
+            DIRS.SUMMARY.INPUT,
+            f => f.endsWith('.json')
+        );
+
+        console.log(`\n🟣 [STAGE 2] Searching for files to summarize to: ${DIRS.SUMMARY.INPUT}`);
+
+        const summaryInputs = await summarizer.listInputs(f => f.endsWith('.json'));
+        
+        if (summaryInputs.length === 0) {
+            console.log("⚠️ No pending files to summarize in " + DIRS.SUMMARY.INPUT);
+        } else {
+            console.log(`🟣 [STAGE 2] Summarizing ${summaryInputs.length} file(s)...`);
+            for (const file of summaryInputs) {
+                await summarizer.execute(path.join(DIRS.SUMMARY.INPUT, file));
+            }
+        }
     }
 
     // 3. Stage: Email
     // Note: If --all is present or --email is present, we run this.
     if (doEmail) {
-        await pipeline.stageEmail();
+        console.log(`\n🟢 [STAGE 3] Preparing emails...`);
+
+        // summarize → email
+        await moveOutputs(
+            DIRS.SUMMARY.OUTPUT,
+            DIRS.EMAIL.INPUT,
+            f => f.endsWith('.json') || f.endsWith('.md') // anchor rule
+        );
+
+        console.log(`\n🟢 [STAGE 3] Searching for summaries to send in: ${DIRS.EMAIL.INPUT}`);
+
+        // We use the .enriched.json as the "anchor" file to trigger the email
+        const emailInputs = await emailer.listInputs(f => f.endsWith('.enriched.json'));
+
+        if (emailInputs.length === 0) {
+            console.log("⚠️ No pending summaries to email.");
+        } else {
+            console.log(`🟢 [STAGE 3] Sending ${emailInputs.length} email(s)...`);
+            for (const file of emailInputs) {
+                const fullPath = path.join(DIRS.EMAIL.INPUT, file);
+                await emailer.execute(fullPath);
+            }
+        }
     }
+
+    // 4. Final Cleanup: Move everything from Email Output to DONE
+    if (doAll || doEmail) {
+        const emailOutputs = await fs.readdir(DIRS.EMAIL.OUTPUT);
+        if (emailOutputs.length > 0) {
+            console.log(`\n✅ [FINISH] Cleaning up. Moving files to: ${DIRS.DONE}`);
+            await moveOutputs(
+                DIRS.EMAIL.OUTPUT,
+                DIRS.DONE,
+                () => true
+            );
+        }
+    }
+    
 }
 
 main().catch(console.error);
-
