@@ -22,46 +22,46 @@ dotenv.config();
 const BASE = './pipeline-data';
 
 export const DIRS = {
-  // ======================================================
-  // STAGE 1 — DOWNLOAD
-  // ======================================================
-  DOWNLOAD: {
-    OUTPUT: path.join(BASE, 'download/output'),
-    ERROR: path.join(BASE, 'download/error')
-  },
+    // ======================================================
+    // STAGE 1 — DOWNLOAD
+    // ======================================================
+    DOWNLOAD: {
+        OUTPUT: path.join(BASE, 'download/output'),
+        ERROR: path.join(BASE, 'download/error')
+    },
 
-  // ======================================================
-  // STAGE 2A — AI SUMMARIZE
-  // ======================================================
-  AI_SUMMARIZE: {
-    INPUT: path.join(BASE, 'ai-summarize/input'),
-    OUTPUT: path.join(BASE, 'ai-summarize/output'),
-    ERROR: path.join(BASE, 'ai-summarize/error')
-  },
+    // ======================================================
+    // STAGE 2A — AI SUMMARIZE
+    // ======================================================
+    AI_SUMMARIZE: {
+        INPUT: path.join(BASE, 'ai-summarize/input'),
+        OUTPUT: path.join(BASE, 'ai-summarize/output'),
+        ERROR: path.join(BASE, 'ai-summarize/error')
+    },
 
-  // ======================================================
-  // STAGE 2B — INTERPRET SUMMARY
-  // ======================================================
-  INTERPRET_SUMMARY: {
-    INPUT: path.join(BASE, 'interpret-summary/input'),
-    OUTPUT: path.join(BASE, 'interpret-summary/output'),
-    ERROR: path.join(BASE, 'interpret-summary/error')
-  },
+    // ======================================================
+    // STAGE 2B — INTERPRET SUMMARY
+    // ======================================================
+    INTERPRET_SUMMARY: {
+        INPUT: path.join(BASE, 'interpret-summary/input'),
+        OUTPUT: path.join(BASE, 'interpret-summary/output'),
+        ERROR: path.join(BASE, 'interpret-summary/error')
+    },
 
-  // ======================================================
-  // STAGE 3 — EMAIL
-  // ======================================================
-  EMAIL: {
-    INPUT: path.join(BASE, 'email/input'),
-    OUTPUT: path.join(BASE, 'email/output'),
-    ERROR: path.join(BASE, 'email/error')
-  },
+    // ======================================================
+    // STAGE 3 — EMAIL
+    // ======================================================
+    EMAIL: {
+        INPUT: path.join(BASE, 'email/input'),
+        OUTPUT: path.join(BASE, 'email/output'),
+        ERROR: path.join(BASE, 'email/error')
+    },
 
-  // ======================================================
-  // FINAL / SYSTEM
-  // ======================================================
-  DONE: path.join(BASE, 'done'),
-  EVENTS: path.join(BASE, 'events')
+    // ======================================================
+    // FINAL / SYSTEM
+    // ======================================================
+    DONE: path.join(BASE, 'done'),
+    EVENTS: path.join(BASE, 'events')
 };
 
 const EVENT_LOG = path.join(DIRS.EVENTS, 'events.log');
@@ -251,20 +251,20 @@ function ensureStringQuotes(str) {
 // ==========================================================
 
 async function initDirs() {
-  const mkdirRecursive = async (node) => {
-    if (typeof node === 'string') {
-      await fs.mkdir(node, { recursive: true });
-      return;
-    }
+    const mkdirRecursive = async (node) => {
+        if (typeof node === 'string') {
+            await fs.mkdir(node, { recursive: true });
+            return;
+        }
 
-    if (typeof node === 'object' && node !== null) {
-      for (const value of Object.values(node)) {
-        await mkdirRecursive(value);
-      }
-    }
-  };
+        if (typeof node === 'object' && node !== null) {
+            for (const value of Object.values(node)) {
+                await mkdirRecursive(value);
+            }
+        }
+    };
 
-  await mkdirRecursive(DIRS);
+    await mkdirRecursive(DIRS);
 }
 
 class EventLogger {
@@ -279,23 +279,23 @@ class EventLogger {
 }
 
 class BaseStage {
-  constructor({ name, inputDir, outputDir, errorDir, logger }) {
-    this.name = name;
-    this.inputDir = inputDir;
-    this.outputDir = outputDir;
-    this.errorDir = errorDir;
-    this.logger = logger;
-  }
+    constructor({ name, inputDir, outputDir, errorDir, logger }) {
+        this.name = name;
+        this.inputDir = inputDir;
+        this.outputDir = outputDir;
+        this.errorDir = errorDir;
+        this.logger = logger;
+    }
 
-  async listInputs(filterFn = () => true) {
-    const files = await fs.readdir(this.inputDir);
-    return files.filter(filterFn);
-  }
+    async listInputs(filterFn = () => true) {
+        const files = await fs.readdir(this.inputDir);
+        return files.filter(filterFn);
+    }
 
     async logSuccess(inputPaths = [], outputPaths = []) {
         // 1️⃣ consume TODOS los inputs
         await Promise.all(
-            inputPaths.map(p => fs.unlink(p).catch(() => {}))
+            inputPaths.map(p => fs.unlink(p).catch(() => { }))
         );
 
         await this.logger.log({
@@ -313,7 +313,7 @@ class BaseStage {
         await Promise.all(
             inputPaths.map(p => {
                 const dest = path.join(this.errorDir, path.basename(p));
-                return fs.rename(p, dest).catch(() => {});
+                return fs.rename(p, dest).catch(() => { });
             })
         );
 
@@ -494,20 +494,10 @@ class AiSummarizeStage extends BaseStage {
 
             // console.log(`   Processed chunk ${i + 1}/${chunks.length}: ${parsed.content.substring(0, 120)}.`);
 
-            results.push({
-                index: i + 1,
-                content: rawContent
-            });
+            results.push(rawContent);
         }
 
         return results;
-    }
-
-    assembleFullContent(chunkResults) {
-        return chunkResults
-            .sort((a, b) => a.index - b.index)
-            .map(c => c.content.trim())
-            .join('\n\n');
     }
 
     async buildRawTranscript(rawTranscript) {
@@ -599,10 +589,10 @@ class AiSummarizeStage extends BaseStage {
 
         const { client, model, rawContent } = await this.aiClient.generateContent(prompt);
 
-        const fullContent = await this.buildRawTranscript(transcript) || ""
+        const fullContentChunks = await this.buildRawTranscript(transcript) || ""
 
         return {
-            fullContent: fullContent,
+            fullContentChunks: fullContentChunks,
             rawContent,
             client,
             model,
@@ -628,7 +618,7 @@ class AiSummarizeStage extends BaseStage {
             }
 
             // Generate summary
-            const { client, model, rawContent, fullContent } = await this._callAI(data.transcript);
+            const { client, model, rawContent, fullContentChunks } = await this._callAI(data.transcript);
 
             const enrichedData = {
                 ...data,
@@ -636,7 +626,7 @@ class AiSummarizeStage extends BaseStage {
                 client,
                 summaryDate: new Date().toISOString(),
                 rawContent,
-                fullContent
+                fullContentChunks
             };
 
             const outPath = path.join(
@@ -659,11 +649,11 @@ class AiSummarizeStage extends BaseStage {
 class InterpretSummaryStage extends BaseStage {
     constructor(logger) {
         super({
-        name: 'Interpret Summary',
-        inputDir: DIRS.INTERPRET_SUMMARY.INPUT,
-        outputDir: DIRS.INTERPRET_SUMMARY.OUTPUT,
-        errorDir: DIRS.INTERPRET_SUMMARY.ERROR,
-        logger
+            name: 'Interpret Summary',
+            inputDir: DIRS.INTERPRET_SUMMARY.INPUT,
+            outputDir: DIRS.INTERPRET_SUMMARY.OUTPUT,
+            errorDir: DIRS.INTERPRET_SUMMARY.ERROR,
+            logger
         });
     }
 
@@ -738,14 +728,8 @@ class InterpretSummaryStage extends BaseStage {
         const results = [];
 
         for (let i = 0; i < chunks.length; i++) {
-            const prompt = this.buildChunkPrompt(chunks[i], i + 1, chunks.length);
-            const { client, model, rawContent } = await this.aiClient.generateContent(prompt);
 
-            console.log(`   Processed chunk ${i + 1}/${chunks.length} ...`);
-
-            //console.log(rawContent);
-
-            const parsed = JSON5.parse(rawContent);
+            const parsed = JSON5.parse(chunks[i]);
 
             // console.log(rawContent);
 
@@ -793,13 +777,13 @@ class InterpretSummaryStage extends BaseStage {
         // 1. Identificamos dónde empieza y termina el valor de "content"
         // Buscamos la clave "content": y capturamos todo hasta el final del objeto
         const contentRegex = /("content"\s*:\s*")([\s\S]*?)("\s*\n?\s*})/;
-        
+
         return rawJson.replace(contentRegex, (match, prefix, content, suffix) => {
             // 2. En el bloque 'content', reemplazamos saltos de línea reales por \n
             const sanitizedContent = content
                 .replace(/\r?\n/g, '\\n') // Convierte Enter en la cadena \n
                 .replace(/"/g, "'");      // Opcional: cambia comillas dobles internas por simples para evitar cierres prematuros
-                
+
             return prefix + sanitizedContent + suffix;
         });
     }
@@ -841,14 +825,18 @@ class InterpretSummaryStage extends BaseStage {
                 parsed = JSON5.parse(cleanedJson);
             }
 
-            const fullContent = await this.assembleFullContent(data.fullContent) || ""
+            // console.log(`   Chunks: `, data.fullContentChunks);
+
+            const chunks = await this.processChunks(data.fullContentChunks)
+
+            const fullContent = await this.assembleFullContent(chunks) || ""
 
             // Create final Markdown content
             const mdContent = `# ${parsed.title}
 
-        ${parsed.content}`;
+                ${parsed.content}`;
 
-        // console.log(`   Parsed JSON: `, parsed);
+            // console.log(`   Parsed JSON: `, parsed);
 
             const enrichedData = {
                 ...data,
@@ -860,6 +848,8 @@ class InterpretSummaryStage extends BaseStage {
                 // client,
                 markdown: parsed.content || "",
             };
+
+            // console.log(`  assembleFullContent: `, fullContent);
 
             // --- outputs ---
             const jsonOut = path.join(this.outputDir, `${videoId}.enriched.json`);
@@ -882,16 +872,16 @@ class InterpretSummaryStage extends BaseStage {
 class EmailStage extends BaseStage {
     constructor(logger) {
         super({
-        name: 'email',
-        inputDir: DIRS.EMAIL.INPUT,
-        outputDir: DIRS.EMAIL.OUTPUT,
-        errorDir: DIRS.EMAIL.ERROR,
-        logger
+            name: 'email',
+            inputDir: DIRS.EMAIL.INPUT,
+            outputDir: DIRS.EMAIL.OUTPUT,
+            errorDir: DIRS.EMAIL.ERROR,
+            logger
         });
 
         this.transporter = nodemailer.createTransport({
-        service: 'gmail',
-        auth: { user: EMAIL_USER, pass: EMAIL_PASS }
+            service: 'gmail',
+            auth: { user: EMAIL_USER, pass: EMAIL_PASS }
         });
     }
 
@@ -988,6 +978,9 @@ class EmailStage extends BaseStage {
             const out = path.join(this.outputDir, `${videoId}.email.html`);
             await fs.writeFile(out, finalHtml);
 
+            await fs.rename(path.join(this.inputDir, `${videoId}.enriched.json`), path.join(this.outputDir, `${videoId}.enriched.json`));
+            await fs.rename(path.join(this.inputDir, `${videoId}.summary.md`), path.join(this.outputDir, `${videoId}.summary.md`));
+
             await this.logSuccess([enrichedJsonPath, mdPath], [enrichedJsonPath, mdPath, out]);
 
         } catch (err) {
@@ -999,14 +992,14 @@ class EmailStage extends BaseStage {
 }
 
 async function moveOutputs(srcDir, destDir, filterFn) {
-  const files = await fs.readdir(srcDir);
+    const files = await fs.readdir(srcDir);
 
-  for (const f of files.filter(filterFn)) {
-    await fs.rename(
-      path.join(srcDir, f),
-      path.join(destDir, f)
-    );
-  }
+    for (const f of files.filter(filterFn)) {
+        await fs.rename(
+            path.join(srcDir, f),
+            path.join(destDir, f)
+        );
+    }
 }
 
 // ==========================================================
@@ -1124,7 +1117,7 @@ Examples:
         console.log(`\n🟣 [STAGE 2A] Searching for files to summarize to: ${DIRS.AI_SUMMARIZE.INPUT}`);
 
         const aiSummaryInputs = await aiSummarizer.listInputs(f => f.endsWith('.json'));
-        
+
         if (aiSummaryInputs.length === 0) {
             console.log("⚠️ No pending files to summarize in " + DIRS.AI_SUMMARIZE.INPUT);
         } else {
@@ -1146,7 +1139,7 @@ Examples:
         console.log(`\n🟣 [STAGE 2B] Searching for files to interpret AI results to: ${DIRS.INTERPRET_SUMMARY.INPUT}`);
 
         const interpretSummaryInputs = await interpretSummaryStage.listInputs(f => f.endsWith('.json'));
-        
+
         if (interpretSummaryInputs.length === 0) {
             console.log("⚠️ No pending files to interpret AI results in " + DIRS.INTERPRET_SUMMARY.INPUT);
         } else {
@@ -1190,6 +1183,7 @@ Examples:
         const emailOutputs = await fs.readdir(DIRS.EMAIL.OUTPUT);
         if (emailOutputs.length > 0) {
             console.log(`\n✅ [FINISH] Cleaning up. Moving files to: ${DIRS.DONE}`);
+            
             await moveOutputs(
                 DIRS.EMAIL.OUTPUT,
                 DIRS.DONE,
@@ -1197,7 +1191,7 @@ Examples:
             );
         }
     }
-    
+
 }
 
 main().catch(console.error);
