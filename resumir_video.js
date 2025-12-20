@@ -31,12 +31,21 @@ export const DIRS = {
   },
 
   // ======================================================
-  // STAGE 2 — SUMMARY
+  // STAGE 2A — AI SUMMARIZE
   // ======================================================
-  SUMMARY: {
-    INPUT: path.join(BASE, 'summary/input'),
-    OUTPUT: path.join(BASE, 'summary/output'),
-    ERROR: path.join(BASE, 'summary/error')
+  AI_SUMMARIZE: {
+    INPUT: path.join(BASE, 'ai-summarize/input'),
+    OUTPUT: path.join(BASE, 'ai-summarize/output'),
+    ERROR: path.join(BASE, 'ai-summarize/error')
+  },
+
+  // ======================================================
+  // STAGE 2B — INTERPRET SUMMARY
+  // ======================================================
+  INTERPRET_SUMMARY: {
+    INPUT: path.join(BASE, 'interpret-summary/input'),
+    OUTPUT: path.join(BASE, 'interpret-summary/output'),
+    ERROR: path.join(BASE, 'interpret-summary/error')
   },
 
   // ======================================================
@@ -269,54 +278,6 @@ class EventLogger {
     }
 }
 
-class StateMachine {
-    constructor(logger) {
-        this.logger = logger;
-    }
-
-    transitions = {
-        DOWNLOADED: ['EMAIL_PENDING', 'SUMMARY_ERROR'],
-        SUMMARY_ERROR: ['SUMMARY_PENDING'],
-        EMAIL_PENDING: ['DONE', 'EMAIL_ERROR'],
-        EMAIL_ERROR: ['EMAIL_PENDING']
-    };
-
-    dirFor(state, videoId = null) {
-        const map = {
-            DOWNLOADED: DIRS.DOWNLOADED,
-            SUMMARY_PENDING: DIRS.SUMMARY_PENDING,
-            SUMMARY_ERROR: DIRS.SUMMARY_ERROR,
-            EMAIL_PENDING: DIRS.EMAIL_PENDING,
-            EMAIL_ERROR: DIRS.EMAIL_ERROR,
-            DONE: path.join(DIRS.DONE, videoId)
-        };
-        return map[state];
-    }
-
-    async transition({ videoId, from, to, filePath, stage, status, message }) {
-        if (!this.transitions[from]?.includes(to)) {
-            throw new Error(`Invalid transition ${from} → ${to}`);
-        }
-
-        const targetDir = this.dirFor(to, videoId);
-        await fs.mkdir(targetDir, { recursive: true });
-
-        const targetPath = path.join(targetDir, path.basename(filePath));
-        await fs.rename(filePath, targetPath);
-
-        await this.logger.log({
-            videoId,
-            from,
-            to,
-            stage,
-            status,
-            message
-        });
-
-        return targetPath;
-    }
-}
-
 class BaseStage {
   constructor({ name, inputDir, outputDir, errorDir, logger }) {
     this.name = name;
@@ -437,16 +398,273 @@ function extractVideoIdFromPath(filePath) {
     return base.split('.')[0];
 }
 
-class SummarizeStage extends BaseStage {
+class AiSummarizeStage extends BaseStage {
     constructor(aiClient, logger) {
         super({
-        name: 'summarize',
-        inputDir: DIRS.SUMMARY.INPUT,
-        outputDir: DIRS.SUMMARY.OUTPUT,
-        errorDir: DIRS.SUMMARY.ERROR,
-        logger
+            name: 'AI Summarize',
+            inputDir: DIRS.AI_SUMMARIZE.INPUT,
+            outputDir: DIRS.AI_SUMMARIZE.OUTPUT,
+            errorDir: DIRS.AI_SUMMARIZE.ERROR,
+            logger
         });
         this.aiClient = aiClient;
+    }
+
+    extractJsonBlock(raw) {
+        if (!raw) return raw;
+
+        const match = raw.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+        return match ? match[1].trim() : raw.trim();
+    }
+
+    chunkTranscript(text, maxChars = 8000) {
+        const paragraphs = text.split('\n\n');
+        const chunks = [];
+
+        let current = '';
+
+        for (const p of paragraphs) {
+            const candidate = current
+                ? current + '\n\n' + p
+                : p;
+
+            if (candidate.length > maxChars) {
+                if (current.trim().length > 0) {
+                    chunks.push(current.trim());
+                }
+                current = p;
+            } else {
+                current = candidate;
+            }
+        }
+
+        if (current.trim().length > 0) {
+            chunks.push(current.trim());
+        }
+
+        return chunks;
+    }
+
+    buildChunkPrompt(chunk, index, total) {
+        return `
+            You are an expert Editor and Translator. You are processing PART ${index} of ${total}.
+
+            ### GOAL
+            Produce a **clean, native Spanish version** of the text, formatted with Markdown for readability.
+
+            ### CRITICAL RULE: NO INTERLEAVING
+            - **NEVER** output the original English text.
+            - **NEVER** output "English text (Spanish translation)".
+            - **REPLACE** the original text entirely with Spanish.
+            - The audience speaks **ONLY SPANISH**.
+
+            ### MARKDOWN FORMATTING RULES (Apply inside the "content" field):
+            1. **Paragraphs & Dialogues:** You MUST use double line breaks (\n\n) to visually separate paragraphs and different speakers.
+            2. **Emphasis:** Use **bold** (double asterisks) for key terms, emphasized words, or loud speech found in the source.
+            3. **Structure:** Do not create big blocks of text. Break it down so it is easy to read.
+
+            ### OUTPUT FORMAT (Strict JSON):
+            Return ONLY a single valid JSON object. No code blocks. No intro text.
+            Ensure the "content" string is properly escaped for JSON if necessary.
+
+            {
+                "chunk_index": ${index},
+                "content": "Aquí va la traducción completa en Español formato MARKDOWN MANDATORY.\\n\\nUsa saltos de línea para separar párrafos.\\n\\nUsa **negrita** para resaltar ideas clave."
+            }
+
+            ### INPUT TEXT:
+            ${chunk}
+        `.trim();
+    }
+
+    async processChunks(chunks) {
+        const results = [];
+
+        for (let i = 0; i < chunks.length; i++) {
+            const prompt = this.buildChunkPrompt(chunks[i], i + 1, chunks.length);
+            const { client, model, rawContent } = await this.aiClient.generateContent(prompt);
+
+            console.log(`   Processed chunk ${i + 1}/${chunks.length} ...`);
+
+            //console.log(rawContent);
+
+            //const parsed = JSON5.parse(rawContent);
+
+            // console.log(rawContent);
+
+            // console.log(`   Processed chunk ${i + 1}/${chunks.length}: ${parsed.content.substring(0, 120)}.`);
+
+            results.push({
+                index: i + 1,
+                content: rawContent
+            });
+        }
+
+        return results;
+    }
+
+    assembleFullContent(chunkResults) {
+        return chunkResults
+            .sort((a, b) => a.index - b.index)
+            .map(c => c.content.trim())
+            .join('\n\n');
+    }
+
+    async buildRawTranscript(rawTranscript) {
+        //const normalized = normalizeTranscript(rawTranscript);
+        //const withSpeakers = detectSpeakers(normalized);
+        const chunks = this.chunkTranscript(rawTranscript);
+
+        const chunkResults = await this.processChunks(chunks);
+        // const fullContent = this.assembleFullContent(chunkResults);
+
+        //const finalPrompt = buildFinalPrompt(fullContent);
+        //const finalResponse = await callLLM(finalPrompt);
+
+        return chunkResults; //JSON.parse(finalResponse);
+    }
+
+    extractStrict(raw) {
+        const match = raw.match(/BEGIN_JSON\s*([\s\S]*?)\s*END_JSON/);
+        if (!match) {
+            throw new Error("Invalid AI output: missing JSON delimiters");
+        }
+        return match[1].trim();
+    }
+
+    async _callAI(transcript) {
+
+        const prompt = `
+            You are an automated system producing machine-readable output.
+
+            You MUST return exactly ONE JSON object.
+            The JSON MUST be enclosed between the delimiters BEGIN_JSON and END_JSON.
+            No text is allowed before BEGIN_JSON or after END_JSON.
+
+            The JSON object MUST strictly conform to schema:
+            - Name: YouTubeTranscriptAnalysis
+            - Version: 1.0
+            - additionalProperties: false
+
+            The JSON object MUST contain EXACTLY these fields, with the following meaning:
+
+            - "schema_version":
+            string, MUST be exactly "1.0".
+
+            - "title":
+            string containing the most likely video title inferred strictly from the transcript.
+            Do NOT invent titles unrelated to the transcript.
+
+            - "language":
+            string indicating the original language detected in the transcript
+            (e.g., "Spanish", "English", "French").
+
+            - "model_used":
+            string identifying the model used.
+
+            - "content":
+            string containing an exhaustive, structured summary strictly grounded in the transcript.
+            Do NOT invent, assume, or add external information. Never use double quotes , use sigle quotes for emphasis.
+            Highlight key points, main arguments, and conclusions explicitly stated in the transcript.
+            Include only explanations or examples that appear verbatim or are directly paraphrased.
+            Use Markdown formatting (headings, bullet lists, bold text) inside the string to improve readability.
+            ${OVERRIDE_LANG
+                ? `Write in ${OVERRIDE_LANG}.`
+                : `Write in the same language as the transcript. Do NOT translate.`}
+
+            Rules:
+            - Do NOT include comments.
+            - Do NOT include trailing commas.
+            - Do NOT wrap the JSON in Markdown or code fences.
+            - Do NOT include explanations or extra text.
+            - The output MUST be parseable using JSON.parse().
+            - If you cannot fully comply, return NOTHING.
+
+            BEGIN_JSON
+            {
+            "schema_version": "1.0",
+            "title": "",
+            "language": "",
+            "model_used": "deepseek",
+            "content": ""
+            }
+            END_JSON
+
+            TRANSCRIPT:
+            ---
+            ${transcript}
+            ---
+            `;
+
+
+        const { client, model, rawContent } = await this.aiClient.generateContent(prompt);
+
+        const fullContent = await this.buildRawTranscript(transcript) || ""
+
+        return {
+            fullContent: fullContent,
+            rawContent,
+            client,
+            model,
+        };
+    }
+
+    async execute(filePath) {
+
+        const videoId = extractVideoIdFromPath(filePath);
+
+        try {
+            //const inputPath = path.join(DIRS.RAW, file);
+            console.log(`   Processing: ${filePath}...`);
+
+            const content = await fs.readFile(filePath, 'utf-8');
+            const data = JSON5.parse(content);
+
+            // sanity check (opcional pero recomendado)
+            if (data.videoId && data.videoId !== videoId) {
+                console.warn(
+                    `⚠️ videoId mismatch: filename=${videoId}, json=${data.videoId}`
+                );
+            }
+
+            // Generate summary
+            const { client, model, rawContent, fullContent } = await this._callAI(data.transcript);
+
+            const enrichedData = {
+                ...data,
+                model,
+                client,
+                summaryDate: new Date().toISOString(),
+                rawContent,
+                fullContent
+            };
+
+            const outPath = path.join(
+                this.outputDir,
+                `${data.videoId}.ai.raw.json`
+            );
+
+            await fs.writeFile(outPath, JSON.stringify(enrichedData, null, 2));
+
+            await this.logSuccess([filePath], [outPath]);
+
+        } catch (err) {
+            console.error(`   ❌ Error processing ${filePath}: ${err.message}`, err);
+            await this.moveToError([filePath], err);
+        }
+    }
+}
+
+
+class InterpretSummaryStage extends BaseStage {
+    constructor(logger) {
+        super({
+        name: 'Interpret Summary',
+        inputDir: DIRS.INTERPRET_SUMMARY.INPUT,
+        outputDir: DIRS.INTERPRET_SUMMARY.OUTPUT,
+        errorDir: DIRS.INTERPRET_SUMMARY.ERROR,
+        logger
+        });
     }
 
     extractJsonBlock(raw) {
@@ -571,106 +789,19 @@ class SummarizeStage extends BaseStage {
         return match[1].trim();
     }
 
-    async _callAI(transcript) {
-
-        const prompt = `
-            You are an automated system producing machine-readable output.
-
-            You MUST return exactly ONE JSON object.
-            The JSON MUST be enclosed between the delimiters BEGIN_JSON and END_JSON.
-            No text is allowed before BEGIN_JSON or after END_JSON.
-
-            The JSON object MUST strictly conform to schema:
-            - Name: YouTubeTranscriptAnalysis
-            - Version: 1.0
-            - additionalProperties: false
-
-            The JSON object MUST contain EXACTLY these fields, with the following meaning:
-
-            - "schema_version":
-            string, MUST be exactly "1.0".
-
-            - "title":
-            string containing the most likely video title inferred strictly from the transcript.
-            Do NOT invent titles unrelated to the transcript.
-
-            - "language":
-            string indicating the original language detected in the transcript
-            (e.g., "Spanish", "English", "French").
-
-            - "model_used":
-            string identifying the model used.
-
-            - "content":
-            string containing an exhaustive, structured summary strictly grounded in the transcript.
-            Do NOT invent, assume, or add external information. Never use double quotes , use sigle quotes for emphasis.
-            Highlight key points, main arguments, and conclusions explicitly stated in the transcript.
-            Include only explanations or examples that appear verbatim or are directly paraphrased.
-            Use Markdown formatting (headings, bullet lists, bold text) inside the string to improve readability.
-            ${OVERRIDE_LANG
-                ? `Write in ${OVERRIDE_LANG}.`
-                : `Write in the same language as the transcript. Do NOT translate.`}
-
-            Rules:
-            - Do NOT include comments.
-            - Do NOT include trailing commas.
-            - Do NOT wrap the JSON in Markdown or code fences.
-            - Do NOT include explanations or extra text.
-            - The output MUST be parseable using JSON.parse().
-            - If you cannot fully comply, return NOTHING.
-
-            BEGIN_JSON
-            {
-            "schema_version": "1.0",
-            "title": "",
-            "language": "",
-            "model_used": "deepseek",
-            "content": ""
-            }
-            END_JSON
-
-            TRANSCRIPT:
-            ---
-            ${transcript}
-            ---
-            `;
-
-
-        const { client, model, rawContent } = await this.aiClient.generateContent(prompt);
-
-        // Clean common artifacts (e.g., if model wraps response in ```json ... ```)
-
-        const cleanedJson = this.extractStrict(rawContent);
-
-        let parsed;
-        try {
-            parsed = JSON5.parse(cleanedJson);
-        } catch (e) {
-            console.error("❌ Failed to parse AI response as JSON cleanedJson:", cleanedJson);
-
-            console.error("❌ Failed to parse AI response as JSON rawContent:", rawContent);
-            // Fallback to avoid crashing
-            return {
-                title: "Error: Invalid JSON",
-                language: "Unknown",
-                model: model,
-                content: "Error: The AI did not return valid JSON.",
-                rawContent,
-                client
-            };
-        }
-
-        const fullContent = await this.buildRawTranscript(transcript) || ""
-
-        return {
-            title: parsed.title || "Untitled Video",
-            language: parsed.language || "Unknown",
-            model: parsed.model_used || model,
-            summaryBody: parsed.content || "",
-            fullContent: fullContent,
-            rawContent,
-            client
-        };
+    robustSanitize(rawJson) {
+        // 1. Identificamos dónde empieza y termina el valor de "content"
+        // Buscamos la clave "content": y capturamos todo hasta el final del objeto
+        const contentRegex = /("content"\s*:\s*")([\s\S]*?)("\s*\n?\s*})/;
+        
+        return rawJson.replace(contentRegex, (match, prefix, content, suffix) => {
+            // 2. En el bloque 'content', reemplazamos saltos de línea reales por \n
+            const sanitizedContent = content
+                .replace(/\r?\n/g, '\\n') // Convierte Enter en la cadena \n
+                .replace(/"/g, "'");      // Opcional: cambia comillas dobles internas por simples para evitar cierres prematuros
+                
+            return prefix + sanitizedContent + suffix;
+        });
     }
 
     async execute(filePath) {
@@ -691,33 +822,43 @@ class SummarizeStage extends BaseStage {
                 );
             }
 
-            // Generate summary
-            const { title, language, summaryBody, client, model, rawContent, fullContent } = await this._callAI(data.transcript);
+            // Clean common artifacts (e.g., if model wraps response in ```json ... ```)
 
-            data.title = title;
-            data.language = language;
-            data.markdown = summaryBody;
-            data.model = model;
-            data.client = client;
-            data.summaryDate = new Date().toISOString();
-            data.rawContent = rawContent
-            data.fullContent = fullContent;
+            let cleanedJson = this.extractStrict(data.rawContent);
+
+            // console.log(`   Cleaned JSON: ${cleanedJson}`);
+
+            let parsed;
+
+            // --- PASO DE RESCATE ---
+            try {
+                // Intentamos parsear normal
+                parsed = JSON5.parse(cleanedJson);
+            } catch (e) {
+                console.log(`   ⚠️ JSON corrupto detectado, intentando reparación robusta...`);
+                // Si falla, aplicamos la limpieza de saltos de línea internos
+                cleanedJson = this.robustSanitize(cleanedJson);
+                parsed = JSON5.parse(cleanedJson);
+            }
+
+            const fullContent = await this.assembleFullContent(data.fullContent) || ""
 
             // Create final Markdown content
-            const mdContent = `# ${title}
+            const mdContent = `# ${parsed.title}
 
-        ${summaryBody}`;
+        ${parsed.content}`;
+
+        // console.log(`   Parsed JSON: `, parsed);
 
             const enrichedData = {
                 ...data,
-                title,
-                language,
-                markdown: summaryBody,
-                model,
-                client,
-                summaryDate: new Date().toISOString(),
-                rawContent,
-                fullContent
+                title: parsed.title || "Untitled Video",
+                language: parsed.language || "Unknown",
+                model: parsed.model_used || model,
+                summaryBody: parsed.content || "",
+                fullContent: fullContent,
+                // client,
+                markdown: parsed.content || "",
             };
 
             // --- outputs ---
@@ -726,7 +867,7 @@ class SummarizeStage extends BaseStage {
 
             await Promise.all([
                 fs.writeFile(jsonOut, JSON.stringify(enrichedData, null, 2)),
-                fs.writeFile(mdOut, `# ${title}\n\n${summaryBody}`)
+                fs.writeFile(mdOut, `# ${parsed.title}\n\n${parsed.content}`)
             ]);
 
             await this.logSuccess([filePath], [jsonOut, mdOut]);
@@ -879,10 +1020,10 @@ async function main() {
     const aiClient = createAiClient(provider);
 
     const logger = new EventLogger();
-    const sm = new StateMachine(logger);
 
     const downloader = new DownloadStage(logger);
-    const summarizer = new SummarizeStage(aiClient, logger);
+    const aiSummarizer = new AiSummarizeStage(aiClient, logger);
+    const interpretSummaryStage = new InterpretSummaryStage(logger);
     const emailer = new EmailStage(logger);
 
     //const pipeline = new PipelineManager(aiClient);
@@ -976,20 +1117,42 @@ Examples:
         // download → summarize
         await moveOutputs(
             DIRS.DOWNLOAD.OUTPUT,
-            DIRS.SUMMARY.INPUT,
+            DIRS.AI_SUMMARIZE.INPUT,
             f => f.endsWith('.json')
         );
 
-        console.log(`\n🟣 [STAGE 2] Searching for files to summarize to: ${DIRS.SUMMARY.INPUT}`);
+        console.log(`\n🟣 [STAGE 2A] Searching for files to summarize to: ${DIRS.AI_SUMMARIZE.INPUT}`);
 
-        const summaryInputs = await summarizer.listInputs(f => f.endsWith('.json'));
+        const aiSummaryInputs = await aiSummarizer.listInputs(f => f.endsWith('.json'));
         
-        if (summaryInputs.length === 0) {
-            console.log("⚠️ No pending files to summarize in " + DIRS.SUMMARY.INPUT);
+        if (aiSummaryInputs.length === 0) {
+            console.log("⚠️ No pending files to summarize in " + DIRS.AI_SUMMARIZE.INPUT);
         } else {
-            console.log(`🟣 [STAGE 2] Summarizing ${summaryInputs.length} file(s)...`);
-            for (const file of summaryInputs) {
-                await summarizer.execute(path.join(DIRS.SUMMARY.INPUT, file));
+            console.log(`🟣 [STAGE 2A] Summarizing ${aiSummaryInputs.length} file(s)...`);
+            for (const file of aiSummaryInputs) {
+                await aiSummarizer.execute(path.join(DIRS.AI_SUMMARIZE.INPUT, file));
+            }
+        }
+
+        console.log(`\n🟣 [STAGE 2B] Preparing files for interpretation...`);
+
+        // download → summarize
+        await moveOutputs(
+            DIRS.AI_SUMMARIZE.OUTPUT,
+            DIRS.INTERPRET_SUMMARY.INPUT,
+            f => f.endsWith('.json')
+        );
+
+        console.log(`\n🟣 [STAGE 2B] Searching for files to interpret AI results to: ${DIRS.INTERPRET_SUMMARY.INPUT}`);
+
+        const interpretSummaryInputs = await interpretSummaryStage.listInputs(f => f.endsWith('.json'));
+        
+        if (interpretSummaryInputs.length === 0) {
+            console.log("⚠️ No pending files to interpret AI results in " + DIRS.INTERPRET_SUMMARY.INPUT);
+        } else {
+            console.log(`🟣 [STAGE 2B] Interpret summary ${interpretSummaryInputs.length} file(s)...`);
+            for (const file of interpretSummaryInputs) {
+                await interpretSummaryStage.execute(path.join(DIRS.INTERPRET_SUMMARY.INPUT, file));
             }
         }
     }
@@ -1001,7 +1164,7 @@ Examples:
 
         // summarize → email
         await moveOutputs(
-            DIRS.SUMMARY.OUTPUT,
+            DIRS.INTERPRET_SUMMARY.OUTPUT,
             DIRS.EMAIL.INPUT,
             f => f.endsWith('.json') || f.endsWith('.md') // anchor rule
         );
