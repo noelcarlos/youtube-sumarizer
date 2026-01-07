@@ -77,6 +77,8 @@ const DEEPSEEK_MODEL = "deepseek-chat";
 const LMSTUDIO_API_KEY = process.env.LMSTUDIO_API_KEY;
 const LMSTUDIO_BASE_URL = "http://localhost:1234/v1";
 const LMSTUDIO_MODEL_NAME = "openai/gpt-oss-20b";
+//const LMSTUDIO_MODEL_NAME = "nvidia/nemotron-3-nano";
+//const LMSTUDIO_MODEL_NAME = "mistralai/ministral-3-14b-reasoning";
 // const LMSTUDIO_MODEL_NAME = "qwen2.5-14b-instruct-mlx"; 
 //const LMSTUDIO_MODEL_NAME = "deepseek/deepseek-r1-0528-qwen3-8b"; 
 // // "qwen2.5-14b-instruct-mlx"; // "mistralai/mistral-7b-instruct-v0.3"; // "openai/gpt-oss-20b"; // "deepseek-r1-distill-qwen-7b"; 
@@ -85,10 +87,10 @@ const LMSTUDIO_MODEL_NAME = "openai/gpt-oss-20b";
 const EMAIL_USER = "david.rey.1040@gmail.com";
 const EMAIL_PASS = process.env.EMAIL_PASS;
 const EMAIL_TO = "noel.carlos@gmail.com";
-const EMAIL_BCC = "kl2053258@gmail.com";
+//const EMAIL_BCC = "kl2053258@gmail.com";
 //const EMAIL_BCC = "kl2053258@gmail.com,manuelvargash95@gmail.com";
-//const EMAIL_BCC = "";
-const OVERRIDE_LANG = "Español"; // Set to null to auto-detect
+const EMAIL_BCC = "";
+const OVERRIDE_LANG = null; //"Español"; // Set to null to auto-detect
 
 // ==========================================================
 // SECTION 1: AI CLIENTS (Dependency Injection)
@@ -348,6 +350,32 @@ class DownloadStage extends BaseStage {
         return u.searchParams.get('v');
     }
 
+    async fetchTranscriptWithFallback(url) {
+        const attempts = [
+            { lang: 'es', label: 'Spanish' },
+            { lang: 'en', label: 'English' },
+            { lang: undefined, label: 'Auto' }
+        ];
+
+        let lastError;
+
+        for (const attempt of attempts) {
+            try {
+                const options = attempt.lang ? { lang: attempt.lang } : undefined;
+                const text = await YoutubeTranscript.fetchTranscript(url, options);
+
+                return {
+                    text,
+                    languageUsed: attempt.label
+                };
+            } catch (err) {
+                lastError = err;
+            }
+        }
+
+        throw lastError;
+    }
+
     async execute(url) {
         console.log(`\n🔵 [STAGE 1] Downloading content: ${url}`);
 
@@ -359,15 +387,17 @@ class DownloadStage extends BaseStage {
 
         try {
             // Fetch transcript
-            const transcriptArray = await YoutubeTranscript.fetchTranscript(url);
-            const transcriptText = transcriptArray.map(item => item.text).join(' ');
+            const transcript = await this.fetchTranscriptWithFallback(url);
+            //const transcriptArray = await YoutubeTranscript.fetchTranscript(url);
+            const transcriptText = transcript.text.map(item => item.text).join(' ');
 
             // Create data object
             const data = {
                 videoId: videoId,
                 originalUrl: url,
                 downloadDate: new Date().toISOString(),
-                transcript: transcriptText
+                transcript: transcriptText,
+                languageFound: transcript.languageUsed
             };
 
             const outPath = path.join(this.outputDir, `${videoId}.json`);
@@ -417,28 +447,25 @@ class AiSummarizeStage extends BaseStage {
         return match ? match[1].trim() : raw.trim();
     }
 
-    chunkTranscript(text, maxChars = 8000) {
-        const paragraphs = text.split('\n\n');
-        const chunks = [];
+    chunkTranscript(text, maxChars = 10000) {
+        const sentences = text
+            .replace(/\s+/g, ' ')
+            .replace(/([.!?])\s+/g, '$1\n')
+            .split('\n');
 
+        const chunks = [];
         let current = '';
 
-        for (const p of paragraphs) {
-            const candidate = current
-                ? current + '\n\n' + p
-                : p;
-
-            if (candidate.length > maxChars) {
-                if (current.trim().length > 0) {
-                    chunks.push(current.trim());
-                }
-                current = p;
+        for (const s of sentences) {
+            if ((current + s).length > maxChars) {
+                chunks.push(current.trim());
+                current = s;
             } else {
-                current = candidate;
+                current += (current ? ' ' : '') + s;
             }
         }
 
-        if (current.trim().length > 0) {
+        if (current.trim()) {
             chunks.push(current.trim());
         }
 
@@ -446,35 +473,65 @@ class AiSummarizeStage extends BaseStage {
     }
 
     buildChunkPrompt(chunk, index, total) {
-        return `
-            You are an expert Editor and Translator. You are processing PART ${index} of ${total}.
+        if (OVERRIDE_LANG) {
+            return `
+                You are an expert Editor and Translator. You are processing PART ${index} of ${total}.
 
-            ### GOAL
-            Produce a **clean, native Spanish version** of the text, formatted with Markdown for readability.
+                ### GOAL
+                Produce a **clean, native ${OVERRIDE_LANG} version** of the text, formatted with Markdown for readability.
 
-            ### CRITICAL RULE: NO INTERLEAVING
-            - **NEVER** output the original English text.
-            - **NEVER** output "English text (Spanish translation)".
-            - **REPLACE** the original text entirely with Spanish.
-            - The audience speaks **ONLY SPANISH**.
+                ### CRITICAL RULE: NO INTERLEAVING
+                - **NEVER** output the original English text.
+                - **NEVER** output "English text (${OVERRIDE_LANG} translation)".
+                - **REPLACE** the original text entirely with ${OVERRIDE_LANG}.
+                - The audience speaks **ONLY ${OVERRIDE_LANG}**.
 
-            ### MARKDOWN FORMATTING RULES (Apply inside the "content" field):
-            1. **Paragraphs & Dialogues:** You MUST use double line breaks (\n\n) to visually separate paragraphs and different speakers.
-            2. **Emphasis:** Use **bold** (double asterisks) for key terms, emphasized words, or loud speech found in the source.
-            3. **Structure:** Do not create big blocks of text. Break it down so it is easy to read.
+                ### MARKDOWN FORMATTING RULES (Apply inside the "content" field):
+                1. **Paragraphs & Dialogues:** You MUST use double line breaks (\n\n) to visually separate paragraphs and different speakers.
+                2. **Emphasis:** Use **bold** (double asterisks) for key terms, emphasized words, or loud speech found in the source.
+                3. **Structure:** Do not create big blocks of text. Break it down so it is easy to read.
 
-            ### OUTPUT FORMAT (Strict JSON):
-            Return ONLY a single valid JSON object. No code blocks. No intro text.
-            Ensure the "content" string is properly escaped for JSON if necessary.
+                ### OUTPUT FORMAT (Strict JSON):
+                Return ONLY a single valid JSON object. No code blocks. No intro text.
+                Ensure the "content" string is properly escaped for JSON if necessary.
 
-            {
-                "chunk_index": ${index},
-                "content": "Aquí va la traducción completa en Español formato MARKDOWN MANDATORY.\\n\\nUsa saltos de línea para separar párrafos.\\n\\nUsa **negrita** para resaltar ideas clave."
-            }
+                {
+                    "chunk_index": ${index},
+                    "content": "Aquí va la traducción completa en ${OVERRIDE_LANG} formato MARKDOWN MANDATORY.\\n\\nUsa saltos de línea para separar párrafos.\\n\\nUsa **negrita** para resaltar ideas clave."
+                }
 
-            ### INPUT TEXT:
-            ${chunk}
-        `.trim();
+                ### INPUT TEXT:
+                ${chunk}
+            `.trim();
+        }  else {
+            return `
+                You are an expert Editor. You are processing PART ${index} of ${total}.
+
+                ### GOAL
+                Produce a **clean, native full version** of the text, formatted with Markdown for readability.
+
+                ### CRITICAL RULE: NO INTERLEAVING
+                - Write in the same language as the transcript. Do NOT translate.
+                - Output the full text DO NOT shorten.
+
+                ### MARKDOWN FORMATTING RULES (Apply inside the "content" field):
+                1. **Paragraphs & Dialogues:** You MUST use double line breaks (\n\n) to visually separate paragraphs and different speakers.
+                2. **Emphasis:** Use **bold** (double asterisks) for key terms, emphasized words, or loud speech found in the source.
+                3. **Structure:** Do not create big blocks of text. Break it down so it is easy to read.
+
+                ### OUTPUT FORMAT (Strict JSON):
+                Return ONLY a single valid JSON object. No code blocks. No intro text.
+                Ensure the "content" string is properly escaped for JSON if necessary.
+
+                {
+                    "chunk_index": ${index},
+                    "content": "Here put the content, write in the same language as the transcript. Do NOT translate, MARKDOWN FORMAT MANDATORY.\\n\\nUsa saltos de línea para separar párrafos.\\n\\nUsa **negrita** para resaltar ideas clave."
+                }
+
+                ### INPUT TEXT:
+                ${chunk}
+            `.trim();
+        }      
     }
 
     async processChunks(chunks) {
@@ -486,14 +543,6 @@ class AiSummarizeStage extends BaseStage {
 
             console.log(`   Processed chunk ${i + 1}/${chunks.length} ...`);
 
-            //console.log(rawContent);
-
-            //const parsed = JSON5.parse(rawContent);
-
-            // console.log(rawContent);
-
-            // console.log(`   Processed chunk ${i + 1}/${chunks.length}: ${parsed.content.substring(0, 120)}.`);
-
             results.push(rawContent);
         }
 
@@ -501,17 +550,10 @@ class AiSummarizeStage extends BaseStage {
     }
 
     async buildRawTranscript(rawTranscript) {
-        //const normalized = normalizeTranscript(rawTranscript);
-        //const withSpeakers = detectSpeakers(normalized);
         const chunks = this.chunkTranscript(rawTranscript);
-
         const chunkResults = await this.processChunks(chunks);
-        // const fullContent = this.assembleFullContent(chunkResults);
 
-        //const finalPrompt = buildFinalPrompt(fullContent);
-        //const finalResponse = await callLLM(finalPrompt);
-
-        return chunkResults; //JSON.parse(finalResponse);
+        return chunkResults;
     }
 
     extractStrict(raw) {
@@ -604,7 +646,6 @@ class AiSummarizeStage extends BaseStage {
         const videoId = extractVideoIdFromPath(filePath);
 
         try {
-            //const inputPath = path.join(DIRS.RAW, file);
             console.log(`   Processing: ${filePath}...`);
 
             const content = await fs.readFile(filePath, 'utf-8');
@@ -645,7 +686,6 @@ class AiSummarizeStage extends BaseStage {
     }
 }
 
-
 class InterpretSummaryStage extends BaseStage {
     constructor(logger) {
         super({
@@ -664,65 +704,6 @@ class InterpretSummaryStage extends BaseStage {
         return match ? match[1].trim() : raw.trim();
     }
 
-    chunkTranscript(text, maxChars = 8000) {
-        const paragraphs = text.split('\n\n');
-        const chunks = [];
-
-        let current = '';
-
-        for (const p of paragraphs) {
-            const candidate = current
-                ? current + '\n\n' + p
-                : p;
-
-            if (candidate.length > maxChars) {
-                if (current.trim().length > 0) {
-                    chunks.push(current.trim());
-                }
-                current = p;
-            } else {
-                current = candidate;
-            }
-        }
-
-        if (current.trim().length > 0) {
-            chunks.push(current.trim());
-        }
-
-        return chunks;
-    }
-
-    buildChunkPrompt(chunk, index, total) {
-        return `
-            You are an expert Editor and Translator. You are processing PART ${index} of ${total}.
-
-            ### GOAL
-            Produce a **clean, native Spanish version** of the text, formatted with Markdown for readability.
-
-            ### CRITICAL RULE: NO INTERLEAVING
-            - **NEVER** output the original English text.
-            - **NEVER** output "English text (Spanish translation)".
-            - **REPLACE** the original text entirely with Spanish.
-            - The audience speaks **ONLY SPANISH**.
-
-            ### MARKDOWN FORMATTING RULES (Apply inside the "content" field):
-            1. **Paragraphs & Dialogues:** You MUST use double line breaks (\n\n) to visually separate paragraphs and different speakers.
-            2. **Emphasis:** Use **bold** (double asterisks) for key terms, emphasized words, or loud speech found in the source.
-            3. **Structure:** Do not create big blocks of text. Break it down so it is easy to read.
-
-            ### OUTPUT FORMAT (Strict JSON):
-            Return ONLY a single valid JSON object. No code blocks. No intro text.
-            Ensure the "content" string is properly escaped for JSON if necessary.
-
-            {
-                "chunk_index": ${index},
-                "content": "Aquí va la traducción completa en Español formato MARKDOWN MANDATORY.\\n\\nUsa saltos de línea para separar párrafos.\\n\\nUsa **negrita** para resaltar ideas clave."
-            }
-
-            ### INPUT TEXT:
-            ${chunk}
-        `.trim();
-    }
 
     async processChunks(chunks) {
         const results = [];
@@ -730,10 +711,6 @@ class InterpretSummaryStage extends BaseStage {
         for (let i = 0; i < chunks.length; i++) {
 
             const parsed = JSON5.parse(chunks[i]);
-
-            // console.log(rawContent);
-
-            // console.log(`   Processed chunk ${i + 1}/${chunks.length}: ${parsed.content.substring(0, 120)}.`);
 
             results.push({
                 index: parsed.chunk_index,
@@ -749,20 +726,6 @@ class InterpretSummaryStage extends BaseStage {
             .sort((a, b) => a.index - b.index)
             .map(c => c.content.trim())
             .join('\n\n');
-    }
-
-    async buildRawTranscript(rawTranscript) {
-        //const normalized = normalizeTranscript(rawTranscript);
-        //const withSpeakers = detectSpeakers(normalized);
-        const chunks = this.chunkTranscript(rawTranscript);
-
-        const chunkResults = await this.processChunks(chunks);
-        const fullContent = this.assembleFullContent(chunkResults);
-
-        //const finalPrompt = buildFinalPrompt(fullContent);
-        //const finalResponse = await callLLM(finalPrompt);
-
-        return fullContent; //JSON.parse(finalResponse);
     }
 
     extractStrict(raw) {
@@ -1084,7 +1047,7 @@ Examples:
         if (urlsToProcess.length === 0) {
             // Only show error if the user explicitly asked to download but gave no URLs
             // If they just ran --summarize, we skip this warning.
-            if (explicitDownload || doAll) {
+            if (explicitDownload) {
                 console.error("❌ Error: You requested a download (or --all) but provided no URLs via --url.");
             } else {
                 console.log("ℹ️ Skipping download stage (no URLs provided).");
