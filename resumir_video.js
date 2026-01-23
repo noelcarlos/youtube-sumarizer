@@ -11,6 +11,7 @@ import * as nodemailer from 'nodemailer';
 import { marked } from 'marked';
 import dotenv from 'dotenv';
 import JSON5 from 'json5';
+import { setTimeout } from 'timers/promises';
 
 dotenv.config();
 
@@ -412,10 +413,13 @@ class DownloadStage extends BaseStage {
 
             await this.logSuccess([], [outPath]);
 
+            // Wait for 2000 milliseconds (2 seconds)
+            await setTimeout(1000);
+
         } catch (error) {
             console.error(`❌ Error downloading: ${error.message}`, error);
             const errPath = path.join(this.errorDir, `${videoId}.json`);
-            await fs.writeFile(errPath, JSON.stringify({ videoId, error: error.message }));
+            await fs.writeFile(errPath, JSON.stringify({ videoId, error: error.message, originalUrl: url }));
             throw err;
         }
     }
