@@ -3,7 +3,7 @@
 // ==========================================================
 import { GoogleGenAI } from '@google/genai';
 import { OpenAI } from 'openai';
-import { YoutubeTranscript } from '@danielxceron/youtube-transcript';
+import { Innertube } from 'youtubei.js';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { URL } from 'url';
@@ -12,6 +12,10 @@ import { marked } from 'marked';
 import dotenv from 'dotenv';
 import JSON5 from 'json5';
 import { setTimeout } from 'timers/promises';
+import { exec } from 'child_process';
+import { promisify } from 'util';
+import * as os from 'os';
+const execAsync = promisify(exec);
 
 dotenv.config();
 
@@ -24,9 +28,19 @@ const BASE = './pipeline-data';
 
 export const DIRS = {
     // ======================================================
+    // STAGE 0 — PROCESS INPUTS (NUEVO)
+    // ======================================================
+    PROCESS_INPUTS: {
+        INPUT: path.join(BASE, 'process-inputs/input'),    // Archivos fuente (CSV, URLs)
+        OUTPUT: path.join(BASE, 'process-inputs/output'),  // JSONs normalizados para Download
+        ERROR: path.join(BASE, 'process-inputs/error'),
+        ARCHIVE: path.join(BASE, 'process-inputs/archive') // Archivos fuente procesados
+    },
+    // ======================================================
     // STAGE 1 — DOWNLOAD
     // ======================================================
     DOWNLOAD: {
+        INPUT: path.join(BASE, 'download/input'),
         OUTPUT: path.join(BASE, 'download/output'),
         ERROR: path.join(BASE, 'download/error')
     },
@@ -330,6 +344,330 @@ class BaseStage {
     }
 }
 
+// ==========================================================
+// STAGE 0 — PROCESS INPUTS (NUEVO)
+// ==========================================================
+class ProcessInputsStage extends BaseStage {
+    constructor(logger) {
+        super({
+            name: 'process-inputs',
+            inputDir: DIRS.PROCESS_INPUTS.INPUT,
+            outputDir: DIRS.PROCESS_INPUTS.OUTPUT, // download/input
+            errorDir: DIRS.PROCESS_INPUTS.ERROR,
+            logger
+        });
+        this.archiveDir = DIRS.PROCESS_INPUTS.ARCHIVE;
+    }
+
+    extractVideoId(url) {
+        try {
+            const u = new URL(url);
+            if (u.hostname.includes('youtu.be')) return u.pathname.slice(1);
+            return u.searchParams.get('v');
+        } catch (error) {
+            console.warn(`   ⚠️ Could not parse URL: ${url}`);
+            return null;
+        }
+    }
+
+    isValidUrl(string) {
+        try {
+            new URL(string);
+            return true;
+        } catch (_) {
+            return false;
+        }
+    }
+
+    // Procesar una línea de CSV o texto plano
+    parseUrlLine(line) {
+        const trimmed = line.trim();
+        
+        // Ignorar líneas vacías y comentarios
+        if (!trimmed || trimmed.startsWith('#') || trimmed.startsWith('//')) {
+            return null;
+        }
+        
+        // Si es una URL completa
+        if (this.isValidUrl(trimmed)) {
+            return {
+                url: trimmed,
+                videoId: this.extractVideoId(trimmed),
+                source: 'direct-url'
+            };
+        }
+        
+        // Si es solo un ID de video (ej: "abc123")
+        if (/^[a-zA-Z0-9_-]{11}$/.test(trimmed)) {
+            return {
+                url: `https://www.youtube.com/watch?v=${trimmed}`,
+                videoId: trimmed,
+                source: 'video-id'
+            };
+        }
+        
+        return null;
+    }
+
+    // Procesar archivo CSV o TXT
+    async processTextFile(filePath) {
+        const fileName = path.basename(filePath);
+        console.log(`   📄 Processing text file: ${fileName}`);
+        
+        try {
+            const content = await fs.readFile(filePath, 'utf-8');
+            const lines = content.split('\n');
+            const urls = [];
+            
+            for (const line of lines) {
+                const urlData = this.parseUrlLine(line);
+                if (urlData) {
+                    urls.push({
+                        ...urlData,
+                        sourceFile: fileName
+                    });
+                }
+            }
+            
+            console.log(`     Found ${urls.length} valid URLs`);
+            return urls;
+            
+        } catch (error) {
+            console.error(`   ❌ Error reading file ${fileName}: ${error.message}`);
+            throw error;
+        }
+    }
+
+    // Procesar archivo JSON (puede ser de error o ya procesado)
+    async processJsonFile(filePath) {
+        const fileName = path.basename(filePath);
+        console.log(`   📋 Processing JSON file: ${fileName}`);
+        
+        try {
+            const content = await fs.readFile(filePath, 'utf-8');
+            const data = JSON5.parse(content);
+            
+            // Si es un archivo de error, extraer la URL original
+            if (data.error) {
+                if (!data.originalUrl) {
+                    console.warn(`   ⚠️ Error JSON without originalUrl: ${fileName}`);
+                    return [];
+                }
+                
+                return [{
+                    url: data.originalUrl,
+                    videoId: data.videoId || this.extractVideoId(data.originalUrl),
+                    source: 'error-reprocess',
+                    originalError: data.error,
+                    errorFile: fileName,
+                    retryCount: (data.retryCount || 0) + 1
+                }];
+            }
+            
+            // Si ya es un archivo de entrada normalizado
+            if (data.url) {
+                return [{
+                    url: data.url,
+                    videoId: data.videoId || this.extractVideoId(data.url),
+                    source: 'normalized-input',
+                    sourceFile: fileName,
+                    metadata: data.metadata || {}
+                }];
+            }
+            
+            console.warn(`   ⚠️ Unrecognized JSON format: ${fileName}`);
+            return [];
+            
+        } catch (error) {
+            console.error(`   ❌ Error parsing JSON file ${fileName}: ${error.message}`);
+            throw error;
+        }
+    }
+
+    // Archivar archivo procesado
+    async archiveInputFile(filePath) {
+        try {
+            const fileName = path.basename(filePath);
+            const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+            const nameWithoutExt = path.basename(fileName, path.extname(fileName));
+            const ext = path.extname(fileName);
+            const archivedName = `${nameWithoutExt}_${timestamp}${ext}`;
+            
+            await fs.rename(filePath, path.join(this.archiveDir, archivedName));
+            console.log(`     Archived: ${fileName} -> ${archivedName}`);
+            
+        } catch (error) {
+            console.warn(`   ⚠️ Could not archive file: ${error.message}`);
+            // Si falla el archivo, al menos moverlo a error
+            await fs.rename(filePath, path.join(this.errorDir, path.basename(filePath)));
+        }
+    }
+
+    // Generar archivo JSON normalizado para Download
+    async generateDownloadInput(urlData, index) {
+        const { url, videoId, source, sourceFile, originalError, retryCount, metadata } = urlData;
+        
+        if (!videoId) {
+            throw new Error(`Could not extract videoId from URL: ${url}`);
+        }
+        
+        const downloadInput = {
+            url: url,
+            videoId: videoId,
+            source: source,
+            sourceFile: sourceFile || 'cli',
+            created: new Date().toISOString(),
+            metadata: metadata || {}
+        };
+        
+        // Añadir información de reproceso si es necesario
+        if (originalError) {
+            downloadInput.originalError = originalError;
+            downloadInput.retryCount = retryCount || 1;
+            downloadInput.lastErrorDate = new Date().toISOString();
+        }
+        
+        // Nombre del archivo: videoId.json (si ya existe, añadir índice)
+        let outputFileName = `${videoId}.json`;
+        let outputPath = path.join(this.outputDir, outputFileName);
+        
+        // Verificar si ya existe
+        if (await fs.access(outputPath).then(() => true).catch(() => false)) {
+            outputFileName = `${videoId}_${index}.json`;
+            outputPath = path.join(this.outputDir, outputFileName);
+        }
+        
+        await fs.writeFile(outputPath, JSON.stringify(downloadInput, null, 2));
+        console.log(`     Generated: ${outputFileName}`);
+        
+        return outputPath;
+    }
+
+    // Procesar un archivo de entrada
+    async processInputFile(filePath) {
+        const fileName = path.basename(filePath);
+        const fileExt = path.extname(filePath).toLowerCase();
+        
+        let urls = [];
+        
+        try {
+            // Determinar tipo de archivo
+            if (fileExt === '.csv' || fileExt === '.txt') {
+                urls = await this.processTextFile(filePath);
+            } else if (fileExt === '.json') {
+                urls = await this.processJsonFile(filePath);
+            } else {
+                console.warn(`   ⚠️ Unsupported file type: ${fileName}`);
+                await this.archiveInputFile(filePath);
+                return [];
+            }
+            
+            // Generar archivos de salida para cada URL
+            const generatedFiles = [];
+            for (let i = 0; i < urls.length; i++) {
+                try {
+                    const outputPath = await this.generateDownloadInput(urls[i], i);
+                    generatedFiles.push(outputPath);
+                } catch (error) {
+                    console.error(`     ❌ Failed to generate input for URL: ${error.message}`);
+                }
+            }
+            
+            // Archivar el archivo fuente
+            await this.archiveInputFile(filePath);
+            
+            return generatedFiles;
+            
+        } catch (error) {
+            console.error(`   ❌ Error processing file ${fileName}: ${error.message}`);
+            // Mover a error
+            await fs.rename(filePath, path.join(this.errorDir, fileName));
+            return [];
+        }
+    }
+
+    // Procesar URLs desde línea de comandos
+    async processCliUrls(urls) {
+        console.log(`\n🔵 [STAGE 0] Processing ${urls.length} URL(s) from CLI...`);
+        
+        const generatedFiles = [];
+        
+        for (let i = 0; i < urls.length; i++) {
+            const url = urls[i];
+            
+            try {
+                const urlData = this.parseUrlLine(url);
+                if (!urlData) {
+                    console.warn(`   ⚠️ Invalid URL: ${url}`);
+                    continue;
+                }
+                
+                urlData.source = 'cli';
+                const outputPath = await this.generateDownloadInput(urlData, i);
+                generatedFiles.push(outputPath);
+                
+            } catch (error) {
+                console.error(`   ❌ Failed to process URL ${url}: ${error.message}`);
+            }
+        }
+        
+        return generatedFiles;
+    }
+
+    // Método principal para procesar todos los inputs
+    async execute(cliUrls = []) {
+        console.log(`\n🔵 [STAGE 0] Process Inputs`);
+        console.log(`   Input directory: ${this.inputDir}`);
+        console.log(`   Input urls: ${cliUrls}`);
+
+        let totalGenerated = 0;
+        
+        try {
+            // 1. Procesar archivos en el directorio de entrada
+            const inputFiles = await fs.readdir(this.inputDir);
+            
+            if (inputFiles.length > 0) {
+                console.log(`   Found ${inputFiles.length} input file(s)`);
+                
+                for (const fileName of inputFiles) {
+                    const filePath = path.join(this.inputDir, fileName);
+                    const generated = await this.processInputFile(filePath);
+                    totalGenerated += generated.length;
+                }
+            } else {
+                console.log('   No input files found in directory');
+            }
+            
+            // 2. Procesar URLs desde línea de comandos
+            if (cliUrls.length > 0) {
+                const generated = await this.processCliUrls(cliUrls);
+                totalGenerated += generated.length;
+            } else {
+                console.log('   No input files in the command line');
+            }
+            
+            console.log(`\n✅ [STAGE 0] Generated ${totalGenerated} download input file(s)`);
+            return totalGenerated;
+            
+        } catch (error) {
+            if (error.code === 'ENOENT') {
+                console.log('   Input directory does not exist, creating...');
+                return 0;
+            }
+            throw error;
+        }
+    }
+}
+
+const USER_AGENTS = [
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:123.0) Gecko/20100101 Firefox/123.0'
+];
+
+function getRandomUA() {
+    return USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
+}
 
 // ==========================================================
 // STAGE 1 — DOWNLOAD
@@ -338,11 +676,18 @@ class DownloadStage extends BaseStage {
     constructor(logger) {
         super({
             name: 'download',
-            inputDir: null, // CLI
+            inputDir: DIRS.DOWNLOAD.INPUT, // CLI
             outputDir: DIRS.DOWNLOAD.OUTPUT,
             errorDir: DIRS.DOWNLOAD.ERROR,
             logger
         });
+    }
+
+    // Inicialización única de la API
+    async initYoutube() {
+        if (!this.yt) {
+            this.yt = await Innertube.create();
+        }
     }
 
     extractVideoId(url) {
@@ -352,52 +697,226 @@ class DownloadStage extends BaseStage {
     }
 
     async fetchTranscriptWithFallback(url) {
-        const attempts = [
-            { lang: 'es', label: 'Spanish' },
-            { lang: 'en', label: 'English' },
-            { lang: undefined, label: 'Auto' }
-        ];
+        const videoId = this.extractVideoId(url);
+        console.log(`   🔍 1. ID extracted: ${videoId}`);
 
-        let lastError;
+        // Step 1: get available tracks to know which languages exist
+        console.log(`   🔍 2. Consultando pistas disponibles...`);
+        const { tracks: captionTracks } = await this._fetchCaptionTracksFromHtml(videoId);
 
-        for (const attempt of attempts) {
+        if (!captionTracks || captionTracks.length === 0) {
+            // Use yt-dlp to give a more specific reason
             try {
-                const options = attempt.lang ? { lang: attempt.lang } : undefined;
-                const text = await YoutubeTranscript.fetchTranscript(url, options);
+                const { stdout } = await execAsync(`yt-dlp --print "%(language)s|%(automatic_captions)j|%(subtitles)j" --skip-download --quiet --no-warnings "${url}"`);
+                const [audioLang, autoCapsJson, subsJson] = stdout.trim().split('|');
 
-                return {
-                    text,
-                    languageUsed: attempt.label
-                };
+                let autoCaps = {};
+                let subs = {};
+                try { autoCaps = JSON.parse(autoCapsJson); } catch {}
+                try { subs = JSON.parse(subsJson); } catch {}
+
+                const autoLangs = Object.keys(autoCaps);
+                const subLangs = Object.keys(subs).filter(k => k !== 'live_chat');
+                const hasLiveChat = 'live_chat' in subs;
+
+                if (autoLangs.length === 0 && subLangs.length === 0) {
+                    const audioInfo = audioLang && audioLang !== 'None' ? ` El audio está en '${audioLang}' pero YouTube no generó subtítulos automáticos.` : '';
+                    const liveChatInfo = hasLiveChat ? " Solo hay 'live_chat' (chat del stream)." : '';
+                    throw new Error(`No hay subtítulos disponibles.${audioInfo}${liveChatInfo}`);
+                }
             } catch (err) {
-                lastError = err;
+                if (err.message.includes('No hay subtítulos')) throw err;
             }
+            throw new Error("No hay subtítulos disponibles.");
         }
 
-        throw lastError;
+        const availableCodes = captionTracks.map(t => t.languageCode);
+        console.log(`   📋 Pistas disponibles: ${availableCodes.join(', ')}`);
+
+        // Pick best track: any es variant > any en variant > first available
+        const findTrack = (prefix) => captionTracks.find(t => t.languageCode?.startsWith(prefix));
+        const targetTrack = findTrack('es') || findTrack('en') || captionTracks[0];
+        console.log(`   🎯 Pista seleccionada: ${targetTrack.name} (${targetTrack.languageCode})`);
+
+        // Step 2: use yt-dlp with the exact language code found
+        try {
+            console.log(`   📥 Descargando con yt-dlp (${targetTrack.languageCode})...`);
+            return await this._fetchWithYtDlp(videoId, url, targetTrack.languageCode);
+        } catch (err) {
+            console.warn(`   ⚠️  yt-dlp falló (${err.message}), intentando URL directa...`);
+        }
+
+        // Fallback: direct timedtext URL from HTML scraping
+        const baseWithoutFmt = targetTrack.baseUrl.replace(/[&?]fmt=[^&]*/g, '');
+        for (const { url: finalUrl, fmt } of [
+            { url: baseWithoutFmt + '&fmt=json3', fmt: 'json3' },
+            { url: baseWithoutFmt + '&fmt=vtt',   fmt: 'vtt' },
+            { url: targetTrack.baseUrl,            fmt: 'raw' },
+        ]) {
+            const response = await global.fetch(finalUrl, {
+                headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36' }
+            });
+            if (!response.ok) continue;
+            const raw = await response.text();
+            if (!raw || raw.length < 30) continue;
+            const text = this._parseSubtitleContent(raw, fmt);
+            if (text) return { text, languageUsed: targetTrack.name };
+        }
+
+        throw new Error("No se pudo descargar el transcript en ningún formato.");
     }
 
-    async execute(url) {
-        console.log(`\n🔵 [STAGE 1] Downloading content: ${url}`);
+    _parseSubtitleContent(raw, fmt) {
+        if (fmt === 'json3') {
+            try {
+                const json = JSON.parse(raw);
+                const text = (json.events || [])
+                    .flatMap(e => (e.segs || []).map(s => s.utf8 || ''))
+                    .join(' ').replace(/\n/g, ' ').replace(/\s+/g, ' ').trim();
+                return text.length > 50 ? text : null;
+            } catch { return null; }
+        }
+        if (fmt === 'vtt') {
+            const text = raw
+                .replace(/WEBVTT[\s\S]*?\n\n/, '')
+                .replace(/\d{2}:\d{2}:\d{2}.\d{3} --> \d{2}:\d{2}:\d{2}.\d{3}[^\n]*/g, '')
+                .replace(/<[^>]*>/g, '').replace(/\n+/g, ' ').replace(/\s+/g, ' ').trim();
+            return text.length > 50 ? text : null;
+        }
+        // raw XML: <transcript><text ...>content</text></transcript>
+        const text = raw
+            .replace(/<text[^>]*>/g, '').replace(/<\/text>/g, ' ').replace(/<[^>]*>/g, '')
+            .replace(/&#39;/g, "'").replace(/&amp;/g, '&').replace(/&quot;/g, '"')
+            .replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+            .replace(/\n+/g, ' ').replace(/\s+/g, ' ').trim();
+        return text.length > 50 ? text : null;
+    }
 
-        const videoId = this.extractVideoId(url);
-        if (!videoId) {
-            console.error(`❌ Invalid URL: ${url}`);
-            return;
+    async _fetchWithYtDlp(videoId, url, langCode) {
+        const tmpDir = os.tmpdir();
+        const outTemplate = path.join(tmpDir, `yt-sub-${videoId}`);
+
+        const cmd = [
+            'yt-dlp',
+            '--skip-download',
+            '--write-auto-subs',
+            '--write-subs',
+            '--sub-langs', langCode,
+            '--sub-format', 'json3',
+            '--output', `"${outTemplate}"`,
+            '--quiet',
+            '--no-warnings',
+            `"${url}"`
+        ].join(' ');
+
+        await execAsync(cmd);
+
+        const filePath = `${outTemplate}.${langCode}.json3`;
+        const raw = await fs.readFile(filePath, 'utf-8');
+        await fs.unlink(filePath).catch(() => {});
+
+        const json = JSON.parse(raw);
+        const text = (json.events || [])
+            .flatMap(e => (e.segs || []).map(s => s.utf8 || ''))
+            .join(' ').replace(/\n/g, ' ').replace(/\s+/g, ' ').trim();
+
+        if (text.length < 50) throw new Error("Transcript demasiado corto.");
+
+        console.log(`   ✅ yt-dlp OK (${langCode}), ${text.length} chars`);
+        return { text, languageUsed: langCode };
+    }
+
+    async _fetchCaptionTracksFromHtml(videoId) {
+        console.log(`   🔍 Scraping HTML de YouTube para video ${videoId}...`);
+        const pageUrl = `https://www.youtube.com/watch?v=${videoId}`;
+        const response = await global.fetch(pageUrl, {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8',
+            }
+        });
+
+        if (!response.ok) {
+            throw new Error(`Error obteniendo página de YouTube: ${response.status}`);
         }
 
+        // Collect cookies from the page response to use in subsequent requests
+        const rawCookies = response.headers.getSetCookie?.() ?? [];
+        const cookies = rawCookies.map(c => c.split(';')[0]).join('; ') || null;
+
+        const html = await response.text();
+
+        // Extract ytInitialPlayerResponse JSON from the page
+        const match = html.match(/ytInitialPlayerResponse\s*=\s*(\{.+?\});(?:\s*var\s|\s*<\/script>)/s);
+        if (!match) {
+            throw new Error("No se encontró ytInitialPlayerResponse en la página.");
+        }
+
+        let playerResponse;
         try {
+            playerResponse = JSON.parse(match[1]);
+        } catch {
+            throw new Error("No se pudo parsear ytInitialPlayerResponse.");
+        }
+
+        const rawTracks = playerResponse?.captions
+            ?.playerCaptionsTracklistRenderer
+            ?.captionTracks;
+
+        if (!rawTracks || rawTracks.length === 0) {
+            return { tracks: null, cookies };
+        }
+
+        console.log(`   ✅ HTML scraping encontró ${rawTracks.length} pistas`);
+        return {
+            tracks: rawTracks.map(t => ({
+                languageCode: t.languageCode,
+                name: t.name?.simpleText || t.languageCode,
+                baseUrl: t.baseUrl,
+            })),
+            cookies,
+        };
+    }
+
+    async execute(filePath) {
+        console.log(`\n🔵 [STAGE 1] Downloading content: ${filePath}`);
+        let inputData;
+
+        try {
+            // Leer el archivo de entrada generado por Stage 0
+            const content = await fs.readFile(filePath, 'utf-8');
+            inputData = JSON5.parse(content);
+        } catch (error) {
+            console.error(`❌ Error reading input file: ${error.message}`, error);
+            const errPath = path.join(this.errorDir, `${filePath}.json`);
+            await fs.writeFile(errPath, JSON.stringify({ filePath: filePath, error: error.message }));
+
+            // Eliminar archivo de entrada
+            await fs.unlink(filePath);
+
+            throw err;
+        }
+        
+        const { url, videoId, source, retryCount } = inputData;
+
+        try {
+            if (!url || !videoId) {
+                throw `❌ Invalid URL: ${url}`;
+            }
+
             // Fetch transcript
             const transcript = await this.fetchTranscriptWithFallback(url);
             //const transcriptArray = await YoutubeTranscript.fetchTranscript(url);
-            const transcriptText = transcript.text.map(item => item.text).join(' ');
+            const transcriptText = transcript.text;
 
             // Create data object
             const data = {
                 videoId: videoId,
-                originalUrl: url,
+                url: url,
                 downloadDate: new Date().toISOString(),
                 transcript: transcriptText,
+                source: source,
+                retryCount: retryCount || 0,
                 languageFound: transcript.languageUsed
             };
 
@@ -413,13 +932,20 @@ class DownloadStage extends BaseStage {
 
             await this.logSuccess([], [outPath]);
 
+            // Eliminar archivo de entrada
+            await fs.unlink(filePath);
+
             // Wait for 2000 milliseconds (2 seconds)
             await setTimeout(1000);
 
         } catch (error) {
             console.error(`❌ Error downloading: ${error.message}`, error);
             const errPath = path.join(this.errorDir, `${videoId}.json`);
-            await fs.writeFile(errPath, JSON.stringify({ videoId, error: error.message, originalUrl: url }));
+            await fs.writeFile(errPath, JSON.stringify({ videoId, error: error.message, url: url }));
+
+            // Eliminar archivo de entrada
+            await fs.unlink(filePath);
+
             throw err;
         }
     }
@@ -713,13 +1239,18 @@ class InterpretSummaryStage extends BaseStage {
         const results = [];
 
         for (let i = 0; i < chunks.length; i++) {
+            try {
+                const parsed = JSON.parse(chunks[i]);
 
-            const parsed = JSON5.parse(chunks[i]);
-
-            results.push({
-                index: parsed.chunk_index,
-                content: parsed.content
-            });
+                results.push({
+                    index: parsed.chunk_index,
+                    content: parsed.content
+                });
+            } catch (err) {
+                console.error(`   ❌ Error parsing chunk ${i + 1}: ${err.message}`, err);
+                console.error(`   ❌ Chunk content parsing error:`,chunks[i]);
+                throw err;
+            }
         }
 
         return results;
@@ -981,6 +1512,7 @@ async function main() {
 
     const logger = new EventLogger();
 
+    const processInputsStage = new ProcessInputsStage(logger);
     const downloader = new DownloadStage(logger);
     const aiSummarizer = new AiSummarizeStage(aiClient, logger);
     const interpretSummaryStage = new InterpretSummaryStage(logger);
@@ -995,7 +1527,8 @@ async function main() {
     const args = process.argv.slice(2);
 
     // Check for explicit flags
-    const explicitDownload = args.includes('--download');
+    const doProcessInputs = args.includes('--process-inputs') || args.includes('--all');
+    const explicitDownload = args.includes('--download') || args.includes('--all');
     const doSummarize = args.includes('--summarize') || args.includes('--all');
     const doEmail = args.includes('--email') || args.includes('--all');
     const doAll = args.includes('--all');
@@ -1014,7 +1547,7 @@ async function main() {
 
     // IMPLICIT LOGIC: If URLs are provided, we MUST download them.
     // So, doDownload is true if explicitly requested OR if implicit via --url OR if --all
-    const doDownload = explicitDownload || urlsToProcess.length > 0 || doAll;
+    let doDownload = explicitDownload || urlsToProcess.length > 0 || doAll;
 
     // --- HELP TEXT ---
     if (args.length === 0) {
@@ -1046,22 +1579,48 @@ Examples:
 
     // --- SEQUENTIAL EXECUTION ---
 
+    console.log('\n' + '='.repeat(60));
+    console.log('STARTING PROCESSING PIPELINE');
+    console.log('='.repeat(60));
+
+    // STAGE 0: Process Inputs
+    if (doProcessInputs || urlsToProcess.length > 0) {
+        console.log(`\n🟣 [STAGE 0] Processing inputs...`);
+
+        const generatedCount = await processInputsStage.execute(urlsToProcess);
+        
+        if (generatedCount > 0) {
+            console.log(`✅ Generated ${generatedCount} download job(s)`);
+            // Si generamos archivos, forzamos la ejecución del download
+            doDownload = true;
+        } else if (doDownload) {
+            console.log('⚠️ No new inputs generated, but --download was specified');
+        }
+    }
+
     // 1. Stage: Download
     if (doDownload) {
-        if (urlsToProcess.length === 0) {
-            // Only show error if the user explicitly asked to download but gave no URLs
-            // If they just ran --summarize, we skip this warning.
-            if (explicitDownload) {
-                console.error("❌ Error: You requested a download (or --all) but provided no URLs via --url.");
-            } else {
-                console.log("ℹ️ Skipping download stage (no URLs provided).");
-            }
+        console.log(`\n🟣 [STAGE 1] Preparing files for downloading`);
+
+        // download → summarize
+        await moveOutputs(
+            DIRS.PROCESS_INPUTS.OUTPUT,
+            DIRS.DOWNLOAD.INPUT,
+            f => f.endsWith('.json')
+        );
+
+        console.log(`\n🟣 [STAGE 1] Searching for files to download to: ${DIRS.DOWNLOAD.INPUT}`);
+
+        const downloadInputs = await downloader.listInputs(f => f.endsWith('.json'));
+
+        if (downloadInputs.length === 0) {
+            console.log('ℹ️ No files to download in download/input');
         } else {
-            console.log(`\n🔵 [STAGE 1] Processing ${urlsToProcess.length} URL(s)...`);
+            console.log(`\n🔵 [STAGE 1] Processing ${downloadInputs.length} URL(s)...`);
             // Process URLs sequentially to avoid rate limiting or potential overlapping file I/O issues
-            for (const url of urlsToProcess) {
+            for (const url of downloadInputs) {
                 try {
-                    await downloader.execute(url);
+                    await downloader.execute(path.join(DIRS.DOWNLOAD.INPUT, url));
                 } catch (err) {
                     // Error is logged inside the stage
                 }
