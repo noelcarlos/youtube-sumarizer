@@ -91,7 +91,7 @@ const DEEPSEEK_MODEL = "deepseek-chat";
 
 const LMSTUDIO_API_KEY = process.env.LMSTUDIO_API_KEY;
 const LMSTUDIO_BASE_URL = "http://localhost:1234/v1";
-const LMSTUDIO_MODEL_NAME = "openai/gpt-oss-20b";
+const LMSTUDIO_MODEL_NAME =  "openai/gpt-oss-20b"; // "google/gemma-4-26b-a4b"; // "openai/gpt-oss-20b";
 //const LMSTUDIO_MODEL_NAME = "nvidia/nemotron-3-nano";
 //const LMSTUDIO_MODEL_NAME = "mistralai/ministral-3-14b-reasoning";
 // const LMSTUDIO_MODEL_NAME = "qwen2.5-14b-instruct-mlx"; 
@@ -102,10 +102,10 @@ const LMSTUDIO_MODEL_NAME = "openai/gpt-oss-20b";
 const EMAIL_USER = "david.rey.1040@gmail.com";
 const EMAIL_PASS = process.env.EMAIL_PASS;
 const EMAIL_TO = "noel.carlos@gmail.com";
-//const EMAIL_BCC = "kl2053258@gmail.com";
+const EMAIL_BCC = "kl2053258@gmail.com";
 //const EMAIL_BCC = "kl2053258@gmail.com,manuelvargash95@gmail.com";
-const EMAIL_BCC = "";
-const OVERRIDE_LANG = null; //"Español"; // Set to null to auto-detect
+//const EMAIL_BCC = "";
+const OVERRIDE_LANG = "Español"; // Set to null to auto-detect
 
 // ==========================================================
 // SECTION 1: AI CLIENTS (Dependency Injection)
@@ -1068,11 +1068,23 @@ class AiSummarizeStage extends BaseStage {
         const results = [];
 
         for (let i = 0; i < chunks.length; i++) {
-            const prompt = this.buildChunkPrompt(chunks[i], i + 1, chunks.length);
-            const { client, model, rawContent } = await this.aiClient.generateContent(prompt);
+            const MAX_RETRIES = 2;
+            let rawContent;
+
+            for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+                const prompt = this.buildChunkPrompt(chunks[i], i + 1, chunks.length);
+                ({ rawContent } = (await this.aiClient.generateContent(prompt)));
+
+                const trimmed = rawContent.trim();
+                if (trimmed.startsWith('{') || trimmed.startsWith('[')) break;
+
+                console.warn(`   ⚠️ Chunk ${i + 1} attempt ${attempt}: model returned non-JSON, retrying...`);
+                if (attempt === MAX_RETRIES) {
+                    throw new Error(`Chunk ${i + 1}: model returned non-JSON after ${MAX_RETRIES} attempts: ${trimmed.slice(0, 80)}`);
+                }
+            }
 
             console.log(`   Processed chunk ${i + 1}/${chunks.length} ...`);
-
             results.push(rawContent);
         }
 
@@ -1235,22 +1247,69 @@ class InterpretSummaryStage extends BaseStage {
     }
 
 
+    sanitizeChunk(raw) {
+        // Escape literal newlines/tabs inside JSON string values
+        let out = '';
+        let inString = false;
+        let escaped = false;
+        for (let i = 0; i < raw.length; i++) {
+            const ch = raw[i];
+            if (escaped) {
+                // If the character after \ is not a valid JSON escape, drop the backslash
+                if (!'"\\/bfnrtu'.includes(ch)) {
+                    out += ch;
+                } else {
+                    out += '\\' + ch;
+                }
+                escaped = false;
+                continue;
+            }
+            if (ch === '\\' && inString) { escaped = true; continue; }
+            if (ch === '"' && !escaped) { inString = !inString; }
+            if (inString && ch === '\n') { out += '\\n'; continue; }
+            if (inString && ch === '\r') { out += '\\r'; continue; }
+            if (inString && ch === '\t') { out += '\\t'; continue; }
+            out += ch;
+        }
+        return out;
+    }
+
+    extractContent(parsed) {
+        // Model sometimes returns "content pretty" or other variants instead of "content"
+        if (parsed.content !== undefined) return parsed.content;
+        const key = Object.keys(parsed).find(k => k.toLowerCase().startsWith('content'));
+        return key ? parsed[key] : '';
+    }
+
     async processChunks(chunks) {
         const results = [];
 
         for (let i = 0; i < chunks.length; i++) {
-            try {
-                const parsed = JSON.parse(chunks[i]);
+            const raw = chunks[i]?.trim();
 
-                results.push({
-                    index: parsed.chunk_index,
-                    content: parsed.content
-                });
-            } catch (err) {
-                console.error(`   ❌ Error parsing chunk ${i + 1}: ${err.message}`, err);
-                console.error(`   ❌ Chunk content parsing error:`,chunks[i]);
-                throw err;
+            // Skip chunks that are not JSON at all (e.g. model replied conversationally)
+            if (!raw || (!raw.startsWith('{') && !raw.startsWith('['))) {
+                console.warn(`   ⚠️ Skipping chunk ${i + 1}: not valid JSON (non-JSON model response)`);
+                continue;
             }
+
+            let parsed;
+            try {
+                parsed = JSON5.parse(raw);
+            } catch {
+                try {
+                    parsed = JSON5.parse(this.sanitizeChunk(raw));
+                } catch (err) {
+                    console.error(`   ❌ Error parsing chunk ${i + 1}: ${err.message}`);
+                    console.warn(`   ⚠️ Skipping chunk ${i + 1} due to unrecoverable parse error`);
+                    continue;
+                }
+            }
+
+            results.push({
+                index: parsed.chunk_index,
+                content: this.extractContent(parsed)
+            });
         }
 
         return results;
@@ -1259,7 +1318,7 @@ class InterpretSummaryStage extends BaseStage {
     assembleFullContent(chunkResults) {
         return chunkResults
             .sort((a, b) => a.index - b.index)
-            .map(c => c.content.trim())
+            .map(c => (c.content ?? '').trim())
             .join('\n\n');
     }
 
