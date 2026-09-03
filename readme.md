@@ -12,23 +12,39 @@ node resumir_video.js --all --url "https://www.youtube.com/watch?v=IOZv3iVZIhg"
 
 ### Servidor persistente
 
+Monorepo con workspaces npm, igual que `iron-agile-bot` (`server.js` en la raíz, la UI en
+`web/`). Primera vez, un solo `npm install` en la raíz instala las dos partes.
+
 ```bash
+npm install
 npm start
 ```
 
-Mismo arranque que `iron-agile-bot` (`node --watch server.js` vía `npm start`): se reinicia solo
-si tocas el código, sin instalar nada extra para el auto-reload.
+`npm start` compila la UI (`vite build` → `web/dist`) y arranca `server.js` con `--watch`, que
+sirve ese build directamente — igual que `iron-agile-bot` (`npm run build && node --watch
+server/src/index.js`). Se reinicia solo si tocas el backend; para la UI hay que repetir el build
+si no usas el modo dev de abajo.
 
 Arranca las 4 etapas (`download`, `ai-summarize`, `interpret-summary`, `email`) como workers que
 corren a la vez para siempre, vigilando sus propias carpetas — a diferencia de la CLI, que
-procesa lo que haya en la cola y sale. Por defecto escucha en `http://localhost:4577`
-(`PORT` en `.env` lo cambia). Es distinto del `4173` de `iron-agile-bot` a propósito: con los dos
-corriendo en la misma máquina, compartir puerto significa que uno de los dos no arranca.
+procesa lo que haya en la cola y sale. Escucha en `http://127.0.0.1:4577` (`PORT` en `.env` lo
+cambia) — en `127.0.0.1` explícito, no el wildcard, para no repetir con nadie el mismo choque de
+puerto que tuvo `iron-agile-bot` con este proyecto (su propio `web/vite.config.js` lo cuenta).
+4577 es distinto del `4173` de `iron-agile-bot` a propósito.
 
-Con el servidor corriendo:
+**Desarrollo de la UI** (dos terminales, con hot-reload de React):
 
-- **UI**: abre `http://localhost:4577` — tabla con la cola en vivo (se refresca sola) y un
-  formulario para encolar URLs.
+```bash
+npm run dev:server   # backend en :4577
+npm run dev           # vite en su propio puerto, /api proxeado a :4577
+```
+
+Con el servidor corriendo, abre la URL que imprime `npm run dev` (o `http://localhost:4577` si
+usaste `npm start`):
+
+- **UI**: pestañas por etapa (Descarga / Resumen IA / Interpretar / Email / Terminado / Error),
+  formulario para encolar con botón de pegar del portapapeles, y botón "reencolar" en las filas
+  que fallaron.
 - **API**:
   - `GET /api/state` — la cola completa, con la etapa de cada vídeo derivada en vivo de las
     carpetas (sin base de datos aparte).
@@ -36,6 +52,7 @@ Con el servidor corriendo:
   - `GET /api/videos/:id/email` — el email tal cual se envió.
   - `GET /api/videos/:id/markdown` — el `.summary.md` en crudo.
   - `POST /api/enqueue` con `{ "url": "..." }` o `{ "urls": [...] }`.
+  - `POST /api/videos/:id/requeue` — mueve un vídeo de `error/` de vuelta a `input/` de su etapa.
 
 ### CLI para encolar (`queue-cli.js`)
 
