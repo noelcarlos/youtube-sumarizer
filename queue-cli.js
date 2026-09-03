@@ -23,4 +23,6 @@ if (!res.ok) {
 }
 
 const body = await res.json();
-console.log(`✅ Encolados ${body.enqueued} video(s). Sigue el progreso en ${base}`);
+const quoted = body.urls.map(u => `"${u}"`).join(', ');
+console.log(`✅ Encolados ${body.enqueued} video(s): ${quoted}`);
+console.log(`   Sigue el progreso en ${base}`);
