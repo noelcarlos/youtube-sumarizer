@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<title>youtube-sumarizer — cola</title>
+<style>
+  :root { color-scheme: light; }
+  body { font-family: -apple-system, system-ui, sans-serif; max-width: 960px; margin: 30px auto; padding: 0 20px; color: #1a1a1a; }
+  h1 { font-size: 1.3rem; margin-bottom: 4px; }
+  .sub { color: #666; font-size: 0.85rem; margin-bottom: 20px; }
+  form { display: flex; gap: 8px; margin-bottom: 24px; }
+  input[type=text] { flex: 1; padding: 8px 10px; border: 1px solid #ccc; border-radius: 6px; font-size: 0.9rem; }
+  button { padding: 8px 16px; border: none; border-radius: 6px; background: #cc0000; color: white; font-weight: 600; cursor: pointer; }
+  button:hover { background: #a80000; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #eee; vertical-align: top; }
+  th { color: #888; font-weight: 600; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.03em; }
+  .stage { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 0.78rem; font-weight: 600; white-space: nowrap; }
+  .stage-PROCESS_INPUTS, .stage-DOWNLOAD { background: #eef; color: #334; }
+  .stage-AI_SUMMARIZE { background: #fef3c7; color: #92400e; }
+  .stage-INTERPRET_SUMMARY { background: #ede9fe; color: #5b21b6; }
+  .stage-EMAIL { background: #dbeafe; color: #1e40af; }
+  .stage-DONE { background: #dcfce7; color: #166534; }
+  .bucket-error .stage { background: #fee2e2; color: #991b1b; }
+  .links a { margin-right: 10px; font-size: 0.82rem; color: #cc0000; text-decoration: none; }
+  .links a:hover { text-decoration: underline; }
+  .empty { color: #999; padding: 30px 0; text-align: center; }
+  .err { color: #991b1b; font-size: 0.78rem; margin-top: 4px; }
+  .videoId { font-family: ui-monospace, monospace; font-size: 0.82rem; color: #555; }
+</style>
+</head>
+<body>
+  <h1>youtube-sumarizer</h1>
+  <div class="sub">Cola en vivo — se refresca sola cada 1.5s. El estado sale directamente de las carpetas del pipeline, no de una base de datos aparte.</div>
+
+  <form id="enqueue-form">
+    <input type="text" id="url-input" placeholder="https://www.youtube.com/watch?v=... (varias separadas por coma)" />
+    <button type="submit">Encolar</button>
+  </form>
+
+  <table>
+    <thead>
+      <tr><th>Video</th><th>Etapa</th><th>Título</th><th></th></tr>
+    </thead>
+    <tbody id="rows"></tbody>
+  </table>
+  <div id="empty" class="empty" style="display:none">Nada en la cola. Encola una URL arriba.</div>
+
+<script>
+async function fetchState() {
+  const res = await fetch('/api/state');
+  return res.ok ? res.json() : [];
+}
+
+function linksFor(v) {
+  const links = [];
+  if (v.stage === 'DONE' || v.bucket === 'output') {
+    links.push(`<a href="/api/videos/${v.videoId}/reader" target="_blank">Leer resumen</a>`);
+    links.push(`<a href="/api/videos/${v.videoId}/email" target="_blank">Ver email</a>`);
+    links.push(`<a href="/api/videos/${v.videoId}/markdown" target="_blank">.md</a>`);
+  }
+  if (v.url) links.push(`<a href="${v.url}" target="_blank">YouTube</a>`);
+  return links.join('');
+}
+
+function render(videos) {
+  const rows = document.getElementById('rows');
+  const empty = document.getElementById('empty');
+  if (videos.length === 0) {
+    rows.innerHTML = '';
+    empty.style.display = 'block';
+    return;
+  }
+  empty.style.display = 'none';
+  rows.innerHTML = videos.map(v => `
+    <tr class="bucket-${v.bucket}">
+      <td><span class="videoId">${v.videoId}</span></td>
+      <td><span class="stage stage-${v.stage}">${v.stageLabel}${v.bucket === 'error' ? ' ⚠️' : ''}</span>
+        ${v.lastError ? `<div class="err">${v.lastError.error}</div>` : ''}
+      </td>
+      <td>${v.title ? v.title : '<span style="color:#999">(pendiente)</span>'}${v.language ? ` <span style="color:#999">· ${v.language}</span>` : ''}</td>
+      <td class="links">${linksFor(v)}</td>
+    </tr>
+  `).join('');
+}
+
+async function tick() {
+  try {
+    render(await fetchState());
+  } catch (err) {
+    console.error(err);
+  }
+}
+
+document.getElementById('enqueue-form').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  const input = document.getElementById('url-input');
+  const urls = input.value.split(',').map(u => u.trim()).filter(Boolean);
+  if (urls.length === 0) return;
+  const res = await fetch('/api/enqueue', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ urls }),
+  });
+  if (res.ok) {
+    input.value = '';
+    tick();
+  } else {
+    alert('Error al encolar: ' + await res.text());
+  }
+});
+
+tick();
+setInterval(tick, 1500);
+</script>
+</body>
+</html>

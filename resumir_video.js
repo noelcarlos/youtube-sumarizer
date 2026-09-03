@@ -297,7 +297,7 @@ function requireKey(key, provider, envVar) {
     return key;
 }
 
-function createAiClient(provider) {
+export function createAiClient(provider) {
     switch (provider) {
         case 'gemini': return new GeminiClient(requireKey(GEMINI_API_KEY, provider, 'GEMINI_API_KEY'), GEMINI_MODEL);
         case 'deepseek': return new OpenAICompatibleClient(requireKey(DEEPSEEK_API_KEY, provider, 'DEEPSEEK_API_KEY'), DEEPSEEK_BASE_URL, DEEPSEEK_MODEL, 10 * 60 * 1000, "DeepSeek");
@@ -402,7 +402,7 @@ function ensureStringQuotes(str) {
 // SECTION 2: PIPELINE MANAGER
 // ==========================================================
 
-async function initDirs() {
+export async function initDirs() {
     const mkdirRecursive = async (node) => {
         if (typeof node === 'string') {
             await fs.mkdir(node, { recursive: true });
@@ -419,7 +419,7 @@ async function initDirs() {
     await mkdirRecursive(DIRS);
 }
 
-class EventLogger {
+export class EventLogger {
     async log(event) {
         const line = JSON.stringify({
             timestamp: new Date().toISOString(),
@@ -482,7 +482,7 @@ class BaseStage {
 // ==========================================================
 // STAGE 0 — PROCESS INPUTS (NUEVO)
 // ==========================================================
-class ProcessInputsStage extends BaseStage {
+export class ProcessInputsStage extends BaseStage {
     constructor(logger) {
         super({
             name: 'process-inputs',
@@ -807,7 +807,7 @@ function getRandomUA() {
 // ==========================================================
 // STAGE 1 — DOWNLOAD
 // ==========================================================
-class DownloadStage extends BaseStage {
+export class DownloadStage extends BaseStage {
     constructor(logger) {
         super({
             name: 'download',
@@ -1023,13 +1023,8 @@ class DownloadStage extends BaseStage {
             inputData = JSON5.parse(content);
         } catch (error) {
             console.error(`❌ Error reading input file: ${error.message}`, error);
-            const errPath = path.join(this.errorDir, `${filePath}.json`);
-            await fs.writeFile(errPath, JSON.stringify({ filePath: filePath, error: error.message }));
-
-            // Eliminar archivo de entrada
-            await fs.unlink(filePath);
-
-            throw err;
+            await this.moveToError([filePath], error);
+            return;
         }
         
         const { url, videoId, source, retryCount } = inputData;
@@ -1075,13 +1070,7 @@ class DownloadStage extends BaseStage {
 
         } catch (error) {
             console.error(`❌ Error downloading: ${error.message}`, error);
-            const errPath = path.join(this.errorDir, `${videoId}.json`);
-            await fs.writeFile(errPath, JSON.stringify({ videoId, error: error.message, url: url }));
-
-            // Eliminar archivo de entrada
-            await fs.unlink(filePath);
-
-            throw err;
+            await this.moveToError([filePath], error);
         }
     }
 }
@@ -1093,7 +1082,7 @@ function extractVideoIdFromPath(filePath) {
     return base.split('.')[0];
 }
 
-class AiSummarizeStage extends BaseStage {
+export class AiSummarizeStage extends BaseStage {
     constructor(aiClient, logger) {
         super({
             name: 'AI Summarize',
@@ -1409,7 +1398,7 @@ class AiSummarizeStage extends BaseStage {
     }
 }
 
-class InterpretSummaryStage extends BaseStage {
+export class InterpretSummaryStage extends BaseStage {
     constructor(logger) {
         super({
             name: 'Interpret Summary',
@@ -1526,7 +1515,7 @@ class InterpretSummaryStage extends BaseStage {
     }
 }
 
-class EmailStage extends BaseStage {
+export class EmailStage extends BaseStage {
     constructor(logger) {
         super({
             name: 'email',
@@ -1652,7 +1641,7 @@ class EmailStage extends BaseStage {
     }
 }
 
-async function moveOutputs(srcDir, destDir, filterFn) {
+export async function moveOutputs(srcDir, destDir, filterFn) {
     const files = await fs.readdir(srcDir);
 
     for (const f of files.filter(filterFn)) {
@@ -1663,7 +1652,7 @@ async function moveOutputs(srcDir, destDir, filterFn) {
     }
 }
 
-function sleep(ms) {
+export function sleep(ms) {
     // `setTimeout` aqui es el de 'timers/promises' (importado arriba), ya devuelve una Promise.
     return setTimeout(ms);
 }
@@ -1684,7 +1673,7 @@ function sleep(ms) {
  * `stage.execute()` already logs and moves failures to error/ for every stage; this adds one more
  * layer of protection around it because DownloadStage historically could throw past its own
  * try/catch, and one bad video must not take the whole worker down with it. */
-async function runStageWorker(stage, { filterInput, upstreamDone, nextInputDir, filterMove, pollMs = 250 }) {
+export async function runStageWorker(stage, { filterInput, upstreamDone, nextInputDir, filterMove, pollMs = 250 }) {
     while (true) {
         const files = await stage.listInputs(filterInput);
 
@@ -1896,4 +1885,8 @@ Examples:
     }
 }
 
-main().catch(console.error);
+// Solo se autoejecuta cuando se invoca directamente (`node resumir_video.js ...`);
+// server.js importa las clases y funciones de este modulo sin querer disparar el CLI.
+if (import.meta.url === `file://${process.argv[1]}`) {
+    main().catch(console.error);
+}
