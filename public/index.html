@@ -2,94 +2,257 @@
 <html lang="es">
 <head>
 <meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>youtube-sumarizer — cola</title>
 <style>
-  :root { color-scheme: light; }
-  body { font-family: -apple-system, system-ui, sans-serif; max-width: 960px; margin: 30px auto; padding: 0 20px; color: #1a1a1a; }
-  h1 { font-size: 1.3rem; margin-bottom: 4px; }
-  .sub { color: #666; font-size: 0.85rem; margin-bottom: 20px; }
-  form { display: flex; gap: 8px; margin-bottom: 24px; }
-  input[type=text] { flex: 1; padding: 8px 10px; border: 1px solid #ccc; border-radius: 6px; font-size: 0.9rem; }
-  button { padding: 8px 16px; border: none; border-radius: 6px; background: #cc0000; color: white; font-weight: 600; cursor: pointer; }
-  button:hover { background: #a80000; }
-  table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
-  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #eee; vertical-align: top; }
-  th { color: #888; font-weight: 600; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.03em; }
-  .stage { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 0.78rem; font-weight: 600; white-space: nowrap; }
-  .stage-PROCESS_INPUTS, .stage-DOWNLOAD { background: #eef; color: #334; }
-  .stage-AI_SUMMARIZE { background: #fef3c7; color: #92400e; }
-  .stage-INTERPRET_SUMMARY { background: #ede9fe; color: #5b21b6; }
-  .stage-EMAIL { background: #dbeafe; color: #1e40af; }
-  .stage-DONE { background: #dcfce7; color: #166534; }
-  .bucket-error .stage { background: #fee2e2; color: #991b1b; }
-  .links a { margin-right: 10px; font-size: 0.82rem; color: #cc0000; text-decoration: none; }
-  .links a:hover { text-decoration: underline; }
-  .empty { color: #999; padding: 30px 0; text-align: center; }
-  .err { color: #991b1b; font-size: 0.78rem; margin-top: 4px; }
-  .videoId { font-family: ui-monospace, monospace; font-size: 0.82rem; color: #555; }
+  :root {
+    color-scheme: light;
+    --paper: #ece5d3;
+    --paper-card: #f5f0e3;
+    --rule: #cabf9f;
+    --ink: #2c2620;
+    --ink-dim: #6b6152;
+    --red: #a6382c;
+    --amber: #93691f;
+    --green: #3f6b3f;
+    --serif: Georgia, 'Iowan Old Style', 'Times New Roman', serif;
+    --mono: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--serif);
+    -webkit-font-smoothing: antialiased;
+  }
+  main {
+    max-width: 760px;
+    margin: 0 auto;
+    padding: 36px 24px 80px;
+  }
+  header {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    border-bottom: 2px solid var(--ink);
+    padding-bottom: 10px;
+    margin-bottom: 6px;
+  }
+  h1 {
+    font-size: 1.5rem;
+    letter-spacing: 0.02em;
+    margin: 0;
+    font-weight: 600;
+  }
+  .clock {
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    color: var(--ink-dim);
+  }
+  .sub {
+    font-family: var(--mono);
+    font-size: 0.76rem;
+    color: var(--ink-dim);
+    margin: 8px 0 28px;
+  }
+
+  form {
+    display: flex;
+    gap: 0;
+    border: 1px solid var(--ink);
+    background: var(--paper-card);
+    margin-bottom: 32px;
+  }
+  form input {
+    flex: 1;
+    border: none;
+    background: transparent;
+    padding: 12px 14px;
+    font-family: var(--mono);
+    font-size: 0.85rem;
+    color: var(--ink);
+  }
+  form input:focus { outline: none; background: #fffdf7; }
+  form input::placeholder { color: var(--ink-dim); }
+  form button {
+    border: none;
+    border-left: 1px solid var(--ink);
+    background: var(--red);
+    color: #fff5ee;
+    padding: 0 22px;
+    font-family: var(--serif);
+    font-size: 0.85rem;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    cursor: pointer;
+  }
+  form button:hover { background: #8c2e23; }
+  form button:focus-visible, a:focus-visible, input:focus-visible {
+    outline: 2px solid var(--red);
+    outline-offset: 2px;
+  }
+
+  .rundown { display: flex; flex-direction: column; }
+  .row {
+    display: grid;
+    grid-template-columns: 92px 1fr;
+    gap: 18px;
+    padding: 16px 0;
+    border-bottom: 1px solid var(--rule);
+    align-items: start;
+  }
+  .row:first-child { border-top: 1px solid var(--rule); }
+
+  /* La cinta de 4 estaciones: es literalmente por qué etapa va pasando el video —
+     información real, no decoración. Gris = por llegar, ámbar = en curso, verde = hecho. */
+  .stations { display: flex; gap: 3px; margin-top: 4px; }
+  .station {
+    flex: 1;
+    height: 5px;
+    background: #d8cfb4;
+    transition: background 250ms ease;
+  }
+  .station.done { background: var(--green); }
+  .station.active { background: var(--amber); }
+  .station.errored { background: var(--red); }
+  .stage-name {
+    font-family: var(--mono);
+    font-size: 0.68rem;
+    letter-spacing: 0.01em;
+    color: var(--ink-dim);
+    margin-top: 6px;
+  }
+  .stage-name.errored { color: var(--red); }
+
+  .videoId { font-family: var(--mono); font-size: 0.72rem; color: var(--ink-dim); }
+  .title { font-size: 1rem; line-height: 1.35; margin: 2px 0 4px; }
+  .title.pending { color: var(--ink-dim); font-style: italic; }
+  .lang { font-family: var(--mono); font-size: 0.72rem; color: var(--ink-dim); }
+  .err-note {
+    margin-top: 6px;
+    padding-left: 10px;
+    border-left: 2px solid var(--red);
+    color: var(--red);
+    font-size: 0.82rem;
+  }
+  .links { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 4px 14px; }
+  .links a {
+    font-family: var(--mono);
+    font-size: 0.74rem;
+    color: var(--ink);
+    text-decoration: none;
+    border-bottom: 1px solid var(--rule);
+  }
+  .links a:hover { border-bottom-color: var(--ink); }
+
+  .empty {
+    text-align: center;
+    padding: 60px 20px;
+    color: var(--ink-dim);
+    font-style: italic;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .station { transition: none; }
+  }
+  @media (max-width: 520px) {
+    .row { grid-template-columns: 1fr; }
+    .stations { max-width: 160px; }
+  }
 </style>
 </head>
 <body>
-  <h1>youtube-sumarizer</h1>
-  <div class="sub">Cola en vivo — se refresca sola cada 1.5s. El estado sale directamente de las carpetas del pipeline, no de una base de datos aparte.</div>
+<main>
+  <header>
+    <h1>youtube-sumarizer</h1>
+    <span class="clock" id="clock"></span>
+  </header>
+  <div class="sub">descarga → resume (IA) → interpreta → envía — se actualiza sola cada 1.5s</div>
 
   <form id="enqueue-form">
-    <input type="text" id="url-input" placeholder="https://www.youtube.com/watch?v=... (varias separadas por coma)" />
+    <input type="text" id="url-input" placeholder="pega una URL de YouTube (o varias separadas por coma) y pulsa Enter" autocomplete="off" />
     <button type="submit">Encolar</button>
   </form>
 
-  <table>
-    <thead>
-      <tr><th>Video</th><th>Etapa</th><th>Título</th><th></th></tr>
-    </thead>
-    <tbody id="rows"></tbody>
-  </table>
-  <div id="empty" class="empty" style="display:none">Nada en la cola. Encola una URL arriba.</div>
+  <div class="rundown" id="rundown"></div>
+  <div class="empty" id="empty" style="display:none">Nada en cola todavía. Pega una URL arriba para empezar.</div>
+</main>
 
 <script>
+const STATIONS = ['DOWNLOAD', 'AI_SUMMARIZE', 'INTERPRET_SUMMARY', 'EMAIL'];
+const STATION_LABEL = { DOWNLOAD: 'descarga', AI_SUMMARIZE: 'resumen (ia)', INTERPRET_SUMMARY: 'interpretar', EMAIL: 'email' };
+
+function stationClasses(v) {
+  const doneAll = v.stage === 'DONE';
+  const currentIdx = STATIONS.indexOf(v.stage);
+  return STATIONS.map((s, i) => {
+    if (doneAll) return 'done';
+    if (i < currentIdx) return 'done';
+    if (i === currentIdx) return v.bucket === 'error' ? 'errored' : 'active';
+    return '';
+  });
+}
+
+function currentLabel(v) {
+  if (v.stage === 'DONE') return 'enviado';
+  if (v.bucket === 'error') return `${STATION_LABEL[v.stage] || v.stage.toLowerCase()} — falló`;
+  return STATION_LABEL[v.stage] || v.stage.toLowerCase();
+}
+
+function linksFor(v) {
+  const links = [];
+  if (v.stage === 'DONE' || (v.stage === 'EMAIL' && v.bucket === 'output')) {
+    links.push(`<a href="/api/videos/${v.videoId}/reader" target="_blank">leer resumen</a>`);
+    links.push(`<a href="/api/videos/${v.videoId}/email" target="_blank">ver email</a>`);
+    links.push(`<a href="/api/videos/${v.videoId}/markdown" target="_blank">.md</a>`);
+  }
+  if (v.url) links.push(`<a href="${v.url}" target="_blank">youtube ↗</a>`);
+  return links.join('');
+}
+
+function render(videos) {
+  const rundown = document.getElementById('rundown');
+  const empty = document.getElementById('empty');
+  if (videos.length === 0) {
+    rundown.innerHTML = '';
+    empty.style.display = 'block';
+    return;
+  }
+  empty.style.display = 'none';
+
+  rundown.innerHTML = videos.map(v => {
+    const classes = stationClasses(v);
+    const stationsHtml = classes.map(c => `<div class="station ${c}"></div>`).join('');
+    const label = currentLabel(v);
+    return `
+      <div class="row">
+        <div>
+          <div class="stations">${stationsHtml}</div>
+          <div class="stage-name ${v.bucket === 'error' ? 'errored' : ''}">${label}</div>
+        </div>
+        <div>
+          <div class="videoId">${v.videoId}</div>
+          <div class="title ${v.title ? '' : 'pending'}">${v.title || 'esperando título…'}</div>
+          ${v.language ? `<div class="lang">${v.language}${v.model ? ' · ' + v.model : ''}</div>` : ''}
+          ${v.lastError ? `<div class="err-note">${v.lastError.error}</div>` : ''}
+          <div class="links">${linksFor(v)}</div>
+        </div>
+      </div>`;
+  }).join('');
+}
+
 async function fetchState() {
   const res = await fetch('/api/state');
   return res.ok ? res.json() : [];
 }
 
-function linksFor(v) {
-  const links = [];
-  if (v.stage === 'DONE' || v.bucket === 'output') {
-    links.push(`<a href="/api/videos/${v.videoId}/reader" target="_blank">Leer resumen</a>`);
-    links.push(`<a href="/api/videos/${v.videoId}/email" target="_blank">Ver email</a>`);
-    links.push(`<a href="/api/videos/${v.videoId}/markdown" target="_blank">.md</a>`);
-  }
-  if (v.url) links.push(`<a href="${v.url}" target="_blank">YouTube</a>`);
-  return links.join('');
-}
-
-function render(videos) {
-  const rows = document.getElementById('rows');
-  const empty = document.getElementById('empty');
-  if (videos.length === 0) {
-    rows.innerHTML = '';
-    empty.style.display = 'block';
-    return;
-  }
-  empty.style.display = 'none';
-  rows.innerHTML = videos.map(v => `
-    <tr class="bucket-${v.bucket}">
-      <td><span class="videoId">${v.videoId}</span></td>
-      <td><span class="stage stage-${v.stage}">${v.stageLabel}${v.bucket === 'error' ? ' ⚠️' : ''}</span>
-        ${v.lastError ? `<div class="err">${v.lastError.error}</div>` : ''}
-      </td>
-      <td>${v.title ? v.title : '<span style="color:#999">(pendiente)</span>'}${v.language ? ` <span style="color:#999">· ${v.language}</span>` : ''}</td>
-      <td class="links">${linksFor(v)}</td>
-    </tr>
-  `).join('');
-}
-
 async function tick() {
-  try {
-    render(await fetchState());
-  } catch (err) {
-    console.error(err);
-  }
+  try { render(await fetchState()); } catch (err) { console.error(err); }
+}
+
+function updateClock() {
+  document.getElementById('clock').textContent = new Date().toLocaleTimeString('es-ES');
 }
 
 document.getElementById('enqueue-form').addEventListener('submit', async (ev) => {
@@ -106,10 +269,12 @@ document.getElementById('enqueue-form').addEventListener('submit', async (ev) =>
     input.value = '';
     tick();
   } else {
-    alert('Error al encolar: ' + await res.text());
+    alert('No se pudo encolar: ' + await res.text());
   }
 });
 
+updateClock();
+setInterval(updateClock, 1000);
 tick();
 setInterval(tick, 1500);
 </script>
