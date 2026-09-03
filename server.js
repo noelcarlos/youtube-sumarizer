@@ -201,11 +201,67 @@ function readerPage(title, bodyHtml) {
 </html>`;
 }
 
+const WEB_DIST = new URL('./web/dist/', import.meta.url);
+const CONTENT_TYPES = {
+    '.html': 'text/html; charset=utf-8',
+    '.js': 'text/javascript; charset=utf-8',
+    '.css': 'text/css; charset=utf-8',
+    '.svg': 'image/svg+xml',
+    '.png': 'image/png',
+    '.ico': 'image/x-icon',
+    '.json': 'application/json; charset=utf-8',
+};
+
+/** Sirve `web/dist` (el build de Vite). Sin rutas dentro de la app (no hay react-router, es una
+ * sola pagina), asi que cualquier GET que no sea un fichero real cae al index.html del build —
+ * y si NO hay build todavia (no se ha corrido `npm run build` en web/), dice exactamente eso en
+ * vez de un 404 mudo. Devuelve `false` si no pudo servir nada (para que el caller decida el 404). */
+async function serveStatic(res, pathname) {
+    const rel = pathname === '/' ? 'index.html' : pathname.replace(/^\/+/, '');
+    const candidate = new URL(rel, WEB_DIST);
+
+    let filePath = candidate;
+    let data;
+    try {
+        data = await fs.readFile(candidate);
+    } catch {
+        // no es un fichero real (o no existe): probamos con el index.html del build para SPA
+        try {
+            filePath = new URL('index.html', WEB_DIST);
+            data = await fs.readFile(filePath);
+        } catch {
+            res.writeHead(503, { 'Content-Type': 'text/plain; charset=utf-8' });
+            res.end('web/dist no existe todavia. Corre "npm run build" (o "npm run dev" en web/ para desarrollo).');
+            return true;
+        }
+    }
+
+    const ext = path.extname(filePath.pathname);
+    res.writeHead(200, { 'Content-Type': CONTENT_TYPES[ext] || 'application/octet-stream' });
+    res.end(data);
+    return true;
+}
+
 async function readFirstExisting(paths) {
     for (const p of paths) {
         try { return await fs.readFile(p, 'utf8'); } catch { /* siguiente candidato */ }
     }
     return null;
+}
+
+/** Mueve de vuelta a input/ los ficheros de un video que estan en error/ para su etapa actual —
+ * exactamente lo mismo que se ha hecho a mano toda la sesion (mv error/x.json input/x.json), pero
+ * desde la UI. El worker de esa etapa ya esta corriendo y lo recoge solo en su siguiente sondeo. */
+async function requeueVideo(videoId) {
+    const state = await buildState();
+    const v = state.find(x => x.videoId === videoId);
+    if (!v) throw Object.assign(new Error(`no se encuentra ${videoId} en ninguna cola`), { status: 404 });
+    if (v.bucket !== 'error') throw Object.assign(new Error(`${videoId} no esta en error (esta en ${v.stage}/${v.bucket})`), { status: 409 });
+
+    const dirs = DIRS[v.stage];
+    const files = (await listDir(dirs.ERROR)).filter(f => videoIdFromFilename(f) === videoId);
+    await Promise.all(files.map(f => fs.rename(path.join(dirs.ERROR, f), path.join(dirs.INPUT, f))));
+    return { stage: v.stage, files };
 }
 
 const server = http.createServer(async (req, res) => {
@@ -267,6 +323,16 @@ const server = http.createServer(async (req, res) => {
             return;
         }
 
+        if (req.method === 'POST' && url.pathname.startsWith('/api/videos/') && url.pathname.endsWith('/requeue')) {
+            const videoId = url.pathname.split('/')[3];
+            try {
+                const result = await requeueVideo(videoId);
+                return sendJson(res, 200, { requeued: videoId, ...result });
+            } catch (err) {
+                return sendJson(res, err.status || 500, { error: err.message });
+            }
+        }
+
         if (req.method === 'POST' && url.pathname === '/api/enqueue') {
             let body = '';
             for await (const chunk of req) body += chunk;
@@ -282,11 +348,12 @@ const server = http.createServer(async (req, res) => {
             return sendJson(res, 200, { enqueued: count, urls });
         }
 
-        if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/index.html')) {
-            const html = await fs.readFile(new URL('./public/index.html', import.meta.url), 'utf8');
-            res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-            res.end(html);
-            return;
+        if (req.method === 'GET' && !url.pathname.startsWith('/api/')) {
+            // Sirve el build de React (web/dist, generado por `npm run build` en web/). En dev,
+            // el frontend corre aparte con `vite` (web/dev) y su proxy manda /api aqui — esta
+            // rama solo se usa en produccion, cuando server.js sirve los estaticos ya construidos.
+            const served = await serveStatic(res, url.pathname);
+            if (served) return;
         }
 
         res.writeHead(404).end('not found');
@@ -296,6 +363,10 @@ const server = http.createServer(async (req, res) => {
     }
 });
 
-server.listen(PORT, () => {
+// 127.0.0.1, NO el wildcard: iron-agile-bot pisaba justo este puerto porque un `node server.js`
+// de otro proyecto (este mismo, antes de este fix) escuchaba en *:4173 por IPv6 mientras el suyo
+// escuchaba en 127.0.0.1 — su propio vite.config.js documenta el incidente. Escuchar solo en
+// 127.0.0.1 evita que este servidor le pueda hacer lo mismo a nadie mas.
+server.listen(PORT, '127.0.0.1', () => {
     console.log(`🟢 youtube-sumarizer server escuchando en http://localhost:${PORT}`);
 });

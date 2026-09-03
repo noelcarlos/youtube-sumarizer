@@ -1,0 +1,23 @@
+@import "tailwindcss";
+
+@theme {
+  --font-serif: Georgia, 'Iowan Old Style', 'Times New Roman', serif;
+  --font-mono: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+
+  --color-paper: #ece5d3;
+  --color-paper-card: #f5f0e3;
+  --color-rule: #cabf9f;
+  --color-ink: #2c2620;
+  --color-ink-dim: #6b6152;
+  --color-red: #a6382c;
+  --color-red-dark: #8c2e23;
+  --color-amber: #93691f;
+  --color-green: #3f6b3f;
+}
+
+body {
+  background: var(--color-paper);
+  color: var(--color-ink);
+  font-family: var(--font-serif);
+  -webkit-font-smoothing: antialiased;
+}
