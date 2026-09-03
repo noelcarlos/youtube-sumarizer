@@ -19,7 +19,10 @@ import {
     ProcessInputsStage, DownloadStage, AiSummarizeStage, InterpretSummaryStage, EmailStage,
 } from './resumir_video.js';
 
-const PORT = Number(process.env.PORT || 4173);
+// 4173 es el default de iron-agile-bot (server/src/index.js) — con los dos corriendo a la vez
+// en la misma maquina, uno de ellos pierde el puerto. 4577 no choca con nada conocido en esta
+// maquina; `PORT` en .env lo cambia si hiciera falta.
+const PORT = Number(process.env.PORT || 4577);
 
 await initDirs();
 

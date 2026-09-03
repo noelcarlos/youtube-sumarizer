@@ -9,7 +9,7 @@ if (urls.length === 0) {
     process.exit(1);
 }
 
-const base = process.env.SUMARIZER_SERVER_URL || 'http://localhost:4173';
+const base = process.env.SUMARIZER_SERVER_URL || 'http://localhost:4577';
 
 const res = await fetch(`${base}/api/enqueue`, {
     method: 'POST',

@@ -13,17 +13,21 @@ node resumir_video.js --all --url "https://www.youtube.com/watch?v=IOZv3iVZIhg"
 ### Servidor persistente
 
 ```bash
-node server.js
+npm start
 ```
+
+Mismo arranque que `iron-agile-bot` (`node --watch server.js` vía `npm start`): se reinicia solo
+si tocas el código, sin instalar nada extra para el auto-reload.
 
 Arranca las 4 etapas (`download`, `ai-summarize`, `interpret-summary`, `email`) como workers que
 corren a la vez para siempre, vigilando sus propias carpetas — a diferencia de la CLI, que
-procesa lo que haya en la cola y sale. Por defecto escucha en `http://localhost:4173`
-(`PORT` en `.env` lo cambia).
+procesa lo que haya en la cola y sale. Por defecto escucha en `http://localhost:4577`
+(`PORT` en `.env` lo cambia). Es distinto del `4173` de `iron-agile-bot` a propósito: con los dos
+corriendo en la misma máquina, compartir puerto significa que uno de los dos no arranca.
 
 Con el servidor corriendo:
 
-- **UI**: abre `http://localhost:4173` — tabla con la cola en vivo (se refresca sola) y un
+- **UI**: abre `http://localhost:4577` — tabla con la cola en vivo (se refresca sola) y un
   formulario para encolar URLs.
 - **API**:
   - `GET /api/state` — la cola completa, con la etapa de cada vídeo derivada en vivo de las
@@ -50,11 +54,11 @@ node queue-cli.js "https://youtu.be/abc" "https://youtu.be/xyz"
 ```
 
 El worker de descarga que ya está corriendo la recoge sola en su siguiente sondeo — no hace
-falta reiniciar ni avisar a nada. Si el servidor no está en `http://localhost:4173`, apunta con
+falta reiniciar ni avisar a nada. Si el servidor no está en `http://localhost:4577`, apunta con
 `SUMARIZER_SERVER_URL`:
 
 ```bash
-SUMARIZER_SERVER_URL=http://mi-servidor:4173 node queue-cli.js "https://youtu.be/abc"
+SUMARIZER_SERVER_URL=http://mi-servidor:9000 node queue-cli.js "https://youtu.be/abc"
 ```
 
 ### Requisitos externos
