@@ -4,8 +4,57 @@ Descarga la transcripción de un vídeo de YouTube, la resume y la reescribe con
 
 ## Uso
 
+Dos formas de correrlo: de un tiro con la CLI, o como servidor persistente.
+
 ```bash
 node resumir_video.js --all --url "https://www.youtube.com/watch?v=IOZv3iVZIhg"
+```
+
+### Servidor persistente
+
+```bash
+node server.js
+```
+
+Arranca las 4 etapas (`download`, `ai-summarize`, `interpret-summary`, `email`) como workers que
+corren a la vez para siempre, vigilando sus propias carpetas — a diferencia de la CLI, que
+procesa lo que haya en la cola y sale. Por defecto escucha en `http://localhost:4173`
+(`PORT` en `.env` lo cambia).
+
+Con el servidor corriendo:
+
+- **UI**: abre `http://localhost:4173` — tabla con la cola en vivo (se refresca sola) y un
+  formulario para encolar URLs.
+- **API**:
+  - `GET /api/state` — la cola completa, con la etapa de cada vídeo derivada en vivo de las
+    carpetas (sin base de datos aparte).
+  - `GET /api/videos/:id/reader` — el resumen ya renderizado a HTML.
+  - `GET /api/videos/:id/email` — el email tal cual se envió.
+  - `GET /api/videos/:id/markdown` — el `.summary.md` en crudo.
+  - `POST /api/enqueue` con `{ "url": "..." }` o `{ "urls": [...] }`.
+
+### CLI para encolar (`queue-cli.js`)
+
+No procesa nada él mismo — solo hace el `POST /api/enqueue` contra el servidor que ya tiene que
+estar corriendo (`node server.js`, en otra terminal o en background).
+
+```bash
+# una URL
+node queue-cli.js "https://www.youtube.com/watch?v=IOZv3iVZIhg"
+
+# varias de golpe, separadas por coma
+node queue-cli.js "https://youtu.be/abc,https://youtu.be/xyz"
+
+# o varios argumentos sueltos
+node queue-cli.js "https://youtu.be/abc" "https://youtu.be/xyz"
+```
+
+El worker de descarga que ya está corriendo la recoge sola en su siguiente sondeo — no hace
+falta reiniciar ni avisar a nada. Si el servidor no está en `http://localhost:4173`, apunta con
+`SUMARIZER_SERVER_URL`:
+
+```bash
+SUMARIZER_SERVER_URL=http://mi-servidor:4173 node queue-cli.js "https://youtu.be/abc"
 ```
 
 ### Requisitos externos
@@ -43,7 +92,9 @@ Evita los `*-coder-*`, `codestral` y `codellama` (afinados a código, peores en 
 
 ## Pipeline
 
-Cinco fases secuenciales. Cada una tiene sus carpetas `input/output/error` bajo `pipeline-data/`, y el orquestador mueve los `output/` de una a los `input/` de la siguiente. La cola *es* el sistema de ficheros, y `error/` es la dead-letter queue: para reintentar, copia el fichero de `error/` al `input/` de su fase.
+Cinco fases. Cada una tiene sus carpetas `input/output/error` bajo `pipeline-data/`, y cada fichero se mueve del `output/` de una fase al `input/` de la siguiente en cuanto termina. La cola *es* el sistema de ficheros, y `error/` es la dead-letter queue: para reintentar, copia el fichero de `error/` al `input/` de su fase.
+
+Con la CLI (`resumir_video.js`) las fases corren en orden, una detrás de otra, dentro del mismo proceso que arranca y termina. Con el servidor (`server.js`) las 4 últimas corren a la vez, cada una vigilando su propia carpeta para siempre — así el vídeo 2 puede estar descargándose mientras el vídeo 1 ya está siendo resumido.
 
 | # | Fase | Produce |
 |---|---|---|
