@@ -1663,6 +1663,49 @@ async function moveOutputs(srcDir, destDir, filterFn) {
     }
 }
 
+function sleep(ms) {
+    // `setTimeout` aqui es el de 'timers/promises' (importado arriba), ya devuelve una Promise.
+    return setTimeout(ms);
+}
+
+/** Runs one stage as a queue worker instead of a one-shot batch.
+ *
+ * The old main() ran each stage as a hard barrier: ALL of download had to finish before ANY of
+ * ai-summarize started, even though downloading (network + yt-dlp) and summarizing (the local GPU)
+ * are entirely different resources that don't need to wait on each other. With 3 queued videos, the
+ * 3rd video's transcript sat idle for two videos' worth of download time before the model ever saw it.
+ *
+ * Here each stage polls its OWN input folder and, as soon as a file finishes, moves its output
+ * straight into the next stage's input — not batched at a stage boundary — so the next stage can
+ * pick it up immediately instead of waiting for the whole batch. `upstreamDone` is a shared flag
+ * object: this worker only exits once its own queue is empty AND upstream has confirmed no more
+ * files are coming, which avoids the race of quitting on a momentarily-empty folder.
+ *
+ * `stage.execute()` already logs and moves failures to error/ for every stage; this adds one more
+ * layer of protection around it because DownloadStage historically could throw past its own
+ * try/catch, and one bad video must not take the whole worker down with it. */
+async function runStageWorker(stage, { filterInput, upstreamDone, nextInputDir, filterMove, pollMs = 250 }) {
+    while (true) {
+        const files = await stage.listInputs(filterInput);
+
+        for (const file of files) {
+            try {
+                await stage.execute(path.join(stage.inputDir, file));
+            } catch (err) {
+                // ya se registro y se movio a error/ dentro de stage.execute()
+            }
+            if (nextInputDir) {
+                await moveOutputs(stage.outputDir, nextInputDir, filterMove ?? filterInput);
+            }
+        }
+
+        if (files.length === 0) {
+            if (upstreamDone.v) return;
+            await sleep(pollMs);
+        }
+    }
+}
+
 // ==========================================================
 // MAIN EXECUTION
 // ==========================================================
@@ -1740,18 +1783,30 @@ Examples:
         return;
     }
 
-    // --- SEQUENTIAL EXECUTION ---
+    // --- EJECUCION CONCURRENTE POR ETAPAS ---
+    //
+    // Antes cada etapa era una barrera dura: TODA la descarga tenia que terminar antes de que
+    // empezara CUALQUIER resumen, aunque descargar (red + yt-dlp) y resumir (la GPU local) son
+    // recursos completamente distintos que no necesitan esperarse entre si. Con 3 videos en
+    // cola, el transcript del tercero se quedaba esperando el tiempo de descarga de los otros
+    // dos antes de que el modelo lo viera siquiera.
+    //
+    // Ahora cada etapa corre como un worker (runStageWorker) que vigila su propia carpeta de
+    // entrada y traspasa cada fichero a la siguiente etapa en cuanto termina, no por lotes, asi
+    // que las etapas se solapan en vez de esperarse. Los flags done.* le dicen a la etapa de
+    // abajo cuando ya no va a llegar nada mas de la de arriba, para que sepa cuando parar en vez
+    // de vigilar una carpeta vacia para siempre.
 
     console.log('\n' + '='.repeat(60));
     console.log('STARTING PROCESSING PIPELINE');
     console.log('='.repeat(60));
 
-    // STAGE 0: Process Inputs
+    // STAGE 0: Process Inputs — sincrono, no es un worker: corre una sola vez al arrancar.
     if (doProcessInputs || urlsToProcess.length > 0) {
         console.log(`\n🟣 [STAGE 0] Processing inputs...`);
 
         const generatedCount = await processInputsStage.execute(urlsToProcess);
-        
+
         if (generatedCount > 0) {
             console.log(`✅ Generated ${generatedCount} download job(s)`);
             // Si generamos archivos, forzamos la ejecución del download
@@ -1761,126 +1816,84 @@ Examples:
         }
     }
 
+    const downloadDone = { v: !doDownload };
+    const aiSummarizeDone = { v: !doSummarize };
+    const interpretSummaryDone = { v: !doSummarize };
+
+    const workers = [];
+
     // 1. Stage: Download
     if (doDownload) {
-        console.log(`\n🟣 [STAGE 1] Preparing files for downloading`);
+        // Recoge tambien lo que el STAGE 0 haya generado en una llamada previa a este proceso.
+        await moveOutputs(DIRS.PROCESS_INPUTS.OUTPUT, DIRS.DOWNLOAD.INPUT, f => f.endsWith('.json'));
 
-        // download → summarize
-        await moveOutputs(
-            DIRS.PROCESS_INPUTS.OUTPUT,
-            DIRS.DOWNLOAD.INPUT,
-            f => f.endsWith('.json')
-        );
-
-        console.log(`\n🟣 [STAGE 1] Searching for files to download to: ${DIRS.DOWNLOAD.INPUT}`);
-
-        const downloadInputs = await downloader.listInputs(f => f.endsWith('.json'));
-
-        if (downloadInputs.length === 0) {
-            console.log('ℹ️ No files to download in download/input');
-        } else {
-            console.log(`\n🔵 [STAGE 1] Processing ${downloadInputs.length} URL(s)...`);
-            // Process URLs sequentially to avoid rate limiting or potential overlapping file I/O issues
-            for (const url of downloadInputs) {
-                try {
-                    await downloader.execute(path.join(DIRS.DOWNLOAD.INPUT, url));
-                } catch (err) {
-                    // Error is logged inside the stage
-                }
-            }
-        }
+        console.log(`\n🟣 [STAGE 1] Watching for files to download in: ${DIRS.DOWNLOAD.INPUT}`);
+        workers.push((async () => {
+            // Upstream ya es {v:true}: STAGE 0 es sincrono y ya termino antes de llegar aqui.
+            await runStageWorker(downloader, {
+                filterInput: f => f.endsWith('.json'),
+                upstreamDone: { v: true },
+                nextInputDir: DIRS.AI_SUMMARIZE.INPUT,
+                filterMove: f => f.endsWith('.json'),
+            });
+            downloadDone.v = true;
+        })());
     }
 
-    // 2. Stage: Summarize
-    // Note: If --all is present or --summarize is present, we run this.
+    // 2A. Stage: AI Summarize
     if (doSummarize) {
-        console.log(`\n🟣 [STAGE 2] Preparing files for summarization...`);
+        // Recoge tambien lo que quedara pendiente de descargas de un proceso anterior.
+        await moveOutputs(DIRS.DOWNLOAD.OUTPUT, DIRS.AI_SUMMARIZE.INPUT, f => f.endsWith('.json'));
 
-        // download → summarize
-        await moveOutputs(
-            DIRS.DOWNLOAD.OUTPUT,
-            DIRS.AI_SUMMARIZE.INPUT,
-            f => f.endsWith('.json')
-        );
+        console.log(`\n🟣 [STAGE 2A] Watching for files to summarize in: ${DIRS.AI_SUMMARIZE.INPUT}`);
+        workers.push((async () => {
+            await runStageWorker(aiSummarizer, {
+                filterInput: f => f.endsWith('.json'),
+                upstreamDone: downloadDone,
+                nextInputDir: DIRS.INTERPRET_SUMMARY.INPUT,
+                filterMove: f => f.endsWith('.json'),
+            });
+            aiSummarizeDone.v = true;
+        })());
 
-        console.log(`\n🟣 [STAGE 2A] Searching for files to summarize to: ${DIRS.AI_SUMMARIZE.INPUT}`);
+        // 2B. Stage: Interpret Summary
+        // Recoge tambien lo que quedara pendiente de un ai-summarize anterior.
+        await moveOutputs(DIRS.AI_SUMMARIZE.OUTPUT, DIRS.INTERPRET_SUMMARY.INPUT, f => f.endsWith('.json'));
 
-        const aiSummaryInputs = await aiSummarizer.listInputs(f => f.endsWith('.json'));
-
-        if (aiSummaryInputs.length === 0) {
-            console.log("⚠️ No pending files to summarize in " + DIRS.AI_SUMMARIZE.INPUT);
-        } else {
-            console.log(`🟣 [STAGE 2A] Summarizing ${aiSummaryInputs.length} file(s)...`);
-            for (const file of aiSummaryInputs) {
-                await aiSummarizer.execute(path.join(DIRS.AI_SUMMARIZE.INPUT, file));
-            }
-        }
-
-        console.log(`\n🟣 [STAGE 2B] Preparing files for interpretation...`);
-
-        // download → summarize
-        await moveOutputs(
-            DIRS.AI_SUMMARIZE.OUTPUT,
-            DIRS.INTERPRET_SUMMARY.INPUT,
-            f => f.endsWith('.json')
-        );
-
-        console.log(`\n🟣 [STAGE 2B] Searching for files to interpret AI results to: ${DIRS.INTERPRET_SUMMARY.INPUT}`);
-
-        const interpretSummaryInputs = await interpretSummaryStage.listInputs(f => f.endsWith('.json'));
-
-        if (interpretSummaryInputs.length === 0) {
-            console.log("⚠️ No pending files to interpret AI results in " + DIRS.INTERPRET_SUMMARY.INPUT);
-        } else {
-            console.log(`🟣 [STAGE 2B] Interpret summary ${interpretSummaryInputs.length} file(s)...`);
-            for (const file of interpretSummaryInputs) {
-                await interpretSummaryStage.execute(path.join(DIRS.INTERPRET_SUMMARY.INPUT, file));
-            }
-        }
+        console.log(`\n🟣 [STAGE 2B] Watching for files to interpret in: ${DIRS.INTERPRET_SUMMARY.INPUT}`);
+        workers.push((async () => {
+            await runStageWorker(interpretSummaryStage, {
+                filterInput: f => f.endsWith('.json'),
+                upstreamDone: aiSummarizeDone,
+                nextInputDir: DIRS.EMAIL.INPUT,
+                filterMove: f => f.endsWith('.json') || f.endsWith('.md'),
+            });
+            interpretSummaryDone.v = true;
+        })());
     }
 
     // 3. Stage: Email
-    // Note: If --all is present or --email is present, we run this.
     if (doEmail) {
-        console.log(`\n🟢 [STAGE 3] Preparing emails...`);
+        // Recoge tambien lo que quedara pendiente de un interpret-summary anterior — esto es lo
+        // que permite lanzar `--email` solo para vaciar la cola sin volver a resumir nada.
+        await moveOutputs(DIRS.INTERPRET_SUMMARY.OUTPUT, DIRS.EMAIL.INPUT, f => f.endsWith('.json') || f.endsWith('.md'));
 
-        // summarize → email
-        await moveOutputs(
-            DIRS.INTERPRET_SUMMARY.OUTPUT,
-            DIRS.EMAIL.INPUT,
-            f => f.endsWith('.json') || f.endsWith('.md') // anchor rule
-        );
-
-        console.log(`\n🟢 [STAGE 3] Searching for summaries to send in: ${DIRS.EMAIL.INPUT}`);
-
-        // We use the .enriched.json as the "anchor" file to trigger the email
-        const emailInputs = await emailer.listInputs(f => f.endsWith('.enriched.json'));
-
-        if (emailInputs.length === 0) {
-            console.log("⚠️ No pending summaries to email.");
-        } else {
-            console.log(`🟢 [STAGE 3] Sending ${emailInputs.length} email(s)...`);
-            for (const file of emailInputs) {
-                const fullPath = path.join(DIRS.EMAIL.INPUT, file);
-                await emailer.execute(fullPath);
-            }
-        }
+        console.log(`\n🟢 [STAGE 3] Watching for summaries to email in: ${DIRS.EMAIL.INPUT}`);
+        workers.push((async () => {
+            // .enriched.json es el fichero ancla que dispara el envio de cada video.
+            await runStageWorker(emailer, {
+                filterInput: f => f.endsWith('.enriched.json'),
+                upstreamDone: interpretSummaryDone,
+                nextInputDir: DIRS.DONE, // reemplaza la limpieza final de antes: se mueve video a video
+                filterMove: () => true, // .enriched.json + .summary.md + .email.html
+            });
+        })());
     }
 
-    // 4. Final Cleanup: Move everything from Email Output to DONE
-    if (doAll || doEmail) {
-        const emailOutputs = await fs.readdir(DIRS.EMAIL.OUTPUT);
-        if (emailOutputs.length > 0) {
-            console.log(`\n✅ [FINISH] Cleaning up. Moving files to: ${DIRS.DONE}`);
-            
-            await moveOutputs(
-                DIRS.EMAIL.OUTPUT,
-                DIRS.DONE,
-                () => true
-            );
-        }
+    if (workers.length > 0) {
+        await Promise.all(workers);
+        console.log(`\n✅ [FINISH] Pipeline completo.`);
     }
-
 }
 
 main().catch(console.error);
