@@ -3,6 +3,7 @@
 // ==========================================================
 import { GoogleGenAI } from '@google/genai';
 import { OpenAI } from 'openai';
+import { Agent as UndiciAgent, fetch as undiciFetch } from 'undici';
 import { Innertube } from 'youtubei.js';
 import * as fs from 'fs/promises';
 import * as path from 'path';
@@ -89,23 +90,33 @@ const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY;
 const DEEPSEEK_BASE_URL = "https://api.deepseek.com/v1";
 const DEEPSEEK_MODEL = "deepseek-chat";
 
+// NVIDIA Cloud is OpenAI-compatible, so it reuses OpenAICompatibleClient as-is.
+// Default is Nemotron 3.5 Lightning: 30B total but only ~3B active (A3B), which decodes
+// fast enough for the per-chunk rewrite pass. Override with NVIDIA_MODEL in .env —
+// "nvidia/nemotron-3-ultra-550b-a55b" for the best quality, or
+// "mistralai/mistral-nemotron" for a non-reasoning model with strong Spanish.
+const NVIDIA_API_KEY = process.env.NVIDIA_API_KEY;
+const NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1";
+const NVIDIA_MODEL = process.env.NVIDIA_MODEL || "nvidia/nemotron-3.5-lightning-30b-a3b";
+const NVIDIA_TIMEOUT_MS = 10 * 60 * 1000; // 10 min, large cloud models can queue
+
 const LMSTUDIO_API_KEY = process.env.LMSTUDIO_API_KEY;
 const LMSTUDIO_BASE_URL = "http://localhost:1234/v1";
-const LMSTUDIO_MODEL_NAME =  "openai/gpt-oss-20b"; // "google/gemma-4-26b-a4b"; // "openai/gpt-oss-20b";
-//const LMSTUDIO_MODEL_NAME = "nvidia/nemotron-3-nano";
-//const LMSTUDIO_MODEL_NAME = "mistralai/ministral-3-14b-reasoning";
-// const LMSTUDIO_MODEL_NAME = "qwen2.5-14b-instruct-mlx"; 
-//const LMSTUDIO_MODEL_NAME = "deepseek/deepseek-r1-0528-qwen3-8b"; 
-// // "qwen2.5-14b-instruct-mlx"; // "mistralai/mistral-7b-instruct-v0.3"; // "openai/gpt-oss-20b"; // "deepseek-r1-distill-qwen-7b"; 
+const LMSTUDIO_TIMEOUT_MS = 30 * 60 * 1000; // 30 min, local models can be slow on long prompts
+// Must match an id the local server actually serves — check with:
+//   curl -s localhost:1234/v1/models -H "Authorization: Bearer $LMSTUDIO_API_KEY"
+// A name that isn't served comes back as a 400, which is what filled events.log with
+// "No models loaded". Avoid the *-coder-* builds here: this pipeline writes prose, not code.
+const LMSTUDIO_MODEL_NAME = process.env.LMSTUDIO_MODEL || "Qwen3.6-35B-A3B-oQ4e-mtp";
 
 // --- EMAIL CONFIG ---
 const EMAIL_USER = "david.rey.1040@gmail.com";
 const EMAIL_PASS = process.env.EMAIL_PASS;
 const EMAIL_TO = "noel.carlos@gmail.com";
-const EMAIL_BCC = "kl2053258@gmail.com";
+//const EMAIL_BCC = "kl2053258@gmail.com";
 //const EMAIL_BCC = "kl2053258@gmail.com,manuelvargash95@gmail.com";
-//const EMAIL_BCC = "";
-const OVERRIDE_LANG = "Español"; // Set to null to auto-detect
+const EMAIL_BCC = "";
+const OVERRIDE_LANG = null; //"Español"; // Set to null to auto-detect
 
 // ==========================================================
 // SECTION 1: AI CLIENTS (Dependency Injection)
@@ -113,6 +124,62 @@ const OVERRIDE_LANG = "Español"; // Set to null to auto-detect
 
 class IModelClient {
     async generateContent(promptContent) { throw new Error("Method 'generateContent' is not implemented."); }
+}
+
+/** The ceiling on a completion. Deliberately NOT derived from the prompt size.
+ *
+ * Sizing it to the expected output is the wrong instinct: a faithful rewrite whose text happens to
+ * tokenize worse than expected (accents, numbers, names) gets cut off mid-sentence, and the cap
+ * itself becomes the bug it was meant to catch. So it is the highest value the endpoint accepts,
+ * and its only job is to be a tripwire — a model that starts looping reports
+ * finish_reason 'length' instead of running to the server's own default.
+ *
+ * 1,000,000 is verified against the local oMLX server (HTTP 200); it clamps to whatever the loaded
+ * model's context leaves free, 200k for Nemotron 3.5 Lightning. Cloud endpoints validate this field
+ * against a per-model maximum and reject an over-large value, so they send nothing and get their own
+ * maximum — better than hardcoding a number per model that goes stale.
+ *
+ * What actually prevents the degenerate loop is chunkTranscript's chunk size, measured in the
+ * comment there. This is just the alarm. */
+const LOCAL_MAX_OUTPUT_TOKENS = 1_000_000;
+
+/** A completion that stopped because it ran out of room is INCOMPLETE — half a sentence, or in the
+ * degenerate case pure repetition. It used to be logged and then written to disk as a success, so a
+ * truncated summary reached the final markdown and the email indistinguishable from a good one.
+ * Failing here sends the transcript to the stage's error/ folder instead, where it can be requeued. */
+function assertNotTruncated(finishReason, label, chars) {
+    if (finishReason !== 'length') return;
+    throw new Error(
+        `[${label}] response hit the output cap (finish_reason=length) after ${chars.toLocaleString()} ` +
+        `chars — the completion is incomplete. Usually means the model started repeating itself: ` +
+        `lower the chunk size (chunkTranscript's maxChars) or switch model.`
+    );
+}
+
+/** Retries a call only when the connection itself broke, never when the server answered.
+ *
+ * The local server intermittently drops the socket mid-generation, surfacing as `TypeError:
+ * terminated` from undici. The OpenAI SDK's own maxRetries does NOT cover it: it retries
+ * APIConnectionError, and a bare undici TypeError never gets wrapped as one. Unretried, a single
+ * dropped socket discards the whole video — one did, four minutes into a run, on chunk 1 of 5.
+ *
+ * A 4xx/5xx with a body is a real answer about a real problem (bad model name, bad key, prompt too
+ * long) and retrying it just wastes minutes reproducing it, so those propagate immediately. */
+function isTransientConnectionError(err) {
+    if (err?.status) return false;                       // the server answered; not a transport fault
+    const s = `${err?.name} ${err?.code} ${err?.message}`.toLowerCase();
+    return /terminated|socket|econnreset|epipe|econnrefused|etimedout|fetch failed|network|closed/.test(s);
+}
+
+async function withConnectionRetry(label, attempts, fn) {
+    for (let attempt = 1; ; attempt++) {
+        try {
+            return await fn();
+        } catch (err) {
+            if (attempt >= attempts || !isTransientConnectionError(err)) throw err;
+            console.warn(`   ⚠️ [${label}] conexión caída (${err.message}) — reintento ${attempt}/${attempts - 1}`);
+        }
+    }
 }
 
 class GeminiClient extends IModelClient {
@@ -130,45 +197,113 @@ class GeminiClient extends IModelClient {
 }
 
 class OpenAICompatibleClient extends IModelClient {
-    constructor(apiKey, baseUrl, modelName) {
+    constructor(apiKey, baseUrl, modelName, timeoutMs = 10 * 60 * 1000, label = "OpenAI") {
         super();
-        this.ai = new OpenAI({ apiKey, baseURL: baseUrl });
+        // Node's global fetch (undici) has its own 300s headers/body timeout that
+        // overrides the OpenAI SDK's `timeout` option. Use a dedicated undici Agent
+        // with matching timeouts so slow cloud requests aren't cut short.
+        const dispatcher = new UndiciAgent({
+            headersTimeout: timeoutMs,
+            bodyTimeout: timeoutMs,
+            connectTimeout: timeoutMs,
+        });
+        const fetchWithDispatcher = (url, options = {}) => undiciFetch(url, { ...options, dispatcher });
+
+        this.ai = new OpenAI({ apiKey, baseURL: baseUrl, timeout: timeoutMs, fetch: fetchWithDispatcher });
         this.modelName = modelName;
+        this.label = label;
     }
     async generateContent(promptContent) {
-        const response = await this.ai.chat.completions.create({
-            model: this.modelName,
-            messages: [{ role: "user", content: promptContent }],
-            temperature: 0.1,
-        });
-        return { client: "OpenAI", model: this.modelName, rawContent: response.choices[0].message.content }
+        console.log(`   🤖 [${this.label}] Request → prompt length: ${promptContent.length} chars (timeout: ${Math.round(this.ai.timeout / 1000)}s, max_tokens: provider default)`);
+
+        const startedAt = Date.now();
+        let response;
+        try {
+            response = await withConnectionRetry(this.label, 3, () => this.ai.chat.completions.create({
+                model: this.modelName,
+                messages: [{ role: "user", content: promptContent }],
+                temperature: 0.1,
+            }));
+        } catch (err) {
+            const elapsedSec = Math.round((Date.now() - startedAt) / 1000);
+            console.error(`   ❌ [${this.label}] API error after ${elapsedSec}s: ${err.message}`);
+            if (err.response?.data) console.error(`   ❌ [${this.label}] Response data:`, JSON.stringify(err.response.data));
+            throw err;
+        }
+
+        const elapsedSec = Math.round((Date.now() - startedAt) / 1000);
+        const rawContent = response.choices[0].message.content;
+
+        console.log(`   🤖 [${this.label}] Response ← ${rawContent.length} chars in ${elapsedSec}s, finish_reason: ${response.choices[0].finish_reason}`);
+        console.log(`   🤖 [${this.label}] Response preview: ${rawContent.slice(0, 300).replace(/\n/g, ' ')}${rawContent.length > 300 ? '...' : ''}`);
+        assertNotTruncated(response.choices[0].finish_reason, this.label, rawContent.length);
+
+        return { client: this.label, model: this.modelName, rawContent: rawContent }
     }
 }
 
 class LMStudioClient extends IModelClient {
-    constructor(apiKey, baseUrl, modelName) {
+    constructor(apiKey, baseUrl, modelName, timeoutMs) {
         super();
-        this.ai = new OpenAI({ apiKey, baseURL: baseUrl });
+        // Node's global fetch (undici) has its own 300s headers/body timeout that
+        // overrides the OpenAI SDK's `timeout` option. Use a dedicated undici Agent
+        // with matching timeouts so long local-model generations aren't cut short.
+        const dispatcher = new UndiciAgent({
+            headersTimeout: timeoutMs,
+            bodyTimeout: timeoutMs,
+            connectTimeout: timeoutMs,
+        });
+        const fetchWithDispatcher = (url, options = {}) => undiciFetch(url, { ...options, dispatcher });
+
+        this.ai = new OpenAI({ apiKey, baseURL: baseUrl, timeout: timeoutMs, fetch: fetchWithDispatcher });
         this.modelName = modelName;
     }
     async generateContent(promptContent) {
-        const response = await this.ai.chat.completions.create({
-            model: this.modelName,
-            messages: [{ role: "user", content: promptContent }],
-            temperature: 0,
-        });
+        console.log(`   🤖 [LMStudio] Request → prompt length: ${promptContent.length} chars (timeout: ${Math.round(this.ai.timeout / 1000)}s, max_tokens: ${LOCAL_MAX_OUTPUT_TOKENS.toLocaleString()})`);
+
+        const startedAt = Date.now();
+        let response;
+        try {
+            response = await withConnectionRetry("LMStudio", 3, () => this.ai.chat.completions.create({
+                model: this.modelName,
+                messages: [{ role: "user", content: promptContent }],
+                temperature: 0,
+                max_tokens: LOCAL_MAX_OUTPUT_TOKENS,
+            }));
+        } catch (err) {
+            const elapsedSec = Math.round((Date.now() - startedAt) / 1000);
+            console.error(`   ❌ [LMStudio] API error after ${elapsedSec}s: ${err.message}`);
+            if (err.response?.data) console.error(`   ❌ [LMStudio] Response data:`, JSON.stringify(err.response.data));
+            throw err;
+        }
+
+        const elapsedSec = Math.round((Date.now() - startedAt) / 1000);
         let content = response.choices[0].message.content;
         let rawContent = content = content.replace(/<think>[\s\S]*?<\/think>\s*/g, '') // Clean "think" tags
+
+        console.log(`   🤖 [LMStudio] Response ← ${rawContent.length} chars in ${elapsedSec}s, finish_reason: ${response.choices[0].finish_reason}`);
+        console.log(`   🤖 [LMStudio] Response preview: ${rawContent.slice(0, 300).replace(/\n/g, ' ')}${rawContent.length > 300 ? '...' : ''}`);
+        assertNotTruncated(response.choices[0].finish_reason, "LMStudio", rawContent.length);
+
         return { client: "LMStudio", model: this.modelName, rawContent: rawContent }
     }
 }
 
+/** Fails now, with the provider named, instead of letting the request go out keyless and come
+ * back as an opaque 400/401 several minutes into a run. Local servers don't need a real key,
+ * so lmstudio is deliberately exempt. */
+function requireKey(key, provider, envVar) {
+    if (!key) throw new Error(`AI_PROVIDER=${provider} needs ${envVar} set in .env`);
+    return key;
+}
+
 function createAiClient(provider) {
     switch (provider) {
-        case 'gemini': return new GeminiClient(GEMINI_API_KEY, GEMINI_MODEL);
-        case 'deepseek': return new OpenAICompatibleClient(DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL, DEEPSEEK_MODEL);
-        case 'lmstudio': return new LMStudioClient(LMSTUDIO_API_KEY, LMSTUDIO_BASE_URL, LMSTUDIO_MODEL_NAME);
-        default: throw new Error(`Unknown provider: ${provider}`);
+        case 'gemini': return new GeminiClient(requireKey(GEMINI_API_KEY, provider, 'GEMINI_API_KEY'), GEMINI_MODEL);
+        case 'deepseek': return new OpenAICompatibleClient(requireKey(DEEPSEEK_API_KEY, provider, 'DEEPSEEK_API_KEY'), DEEPSEEK_BASE_URL, DEEPSEEK_MODEL, 10 * 60 * 1000, "DeepSeek");
+        case 'nvidia': return new OpenAICompatibleClient(requireKey(NVIDIA_API_KEY, provider, 'NVIDIA_API_KEY'), NVIDIA_BASE_URL, NVIDIA_MODEL, NVIDIA_TIMEOUT_MS, "NVIDIA");
+        case 'lmstudio': return new LMStudioClient(LMSTUDIO_API_KEY, LMSTUDIO_BASE_URL, LMSTUDIO_MODEL_NAME, LMSTUDIO_TIMEOUT_MS);
+        default: throw new Error(`Unknown provider: ${provider}. Valid: gemini, deepseek, nvidia, lmstudio`);
     }
 }
 
@@ -970,14 +1105,21 @@ class AiSummarizeStage extends BaseStage {
         this.aiClient = aiClient;
     }
 
-    extractJsonBlock(raw) {
-        if (!raw) return raw;
-
-        const match = raw.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
-        return match ? match[1].trim() : raw.trim();
-    }
-
-    chunkTranscript(text, maxChars = 10000) {
+    /** 12,000 is measured, not guessed. Sweeping this value against a real 49k transcript on
+     * Nemotron 3.5 Lightning 30B A3B, asking for the faithful 1:1 rewrite:
+     *
+     *   chunk    output/input   time   finish
+     *    8,000       1.03x       27s   stop
+     *   12,000       0.99x       33s   stop   <- best throughput, 362 output chars/s
+     *   16,000       0.99x       46s   stop
+     *   24,000       0.99x       91s   stop
+     *   32,000       4.40x      497s   length  <- collapses into repetition
+     *
+     * So this is not a "bigger is faster" dial in either direction. Past ~24k the model loses the
+     * thread and repeats itself until it hits the output cap; below that, larger chunks slow decode
+     * down (58 tok/s at 24k vs 79 at 12k), so fewer-and-bigger chunks finish a transcript SLOWER
+     * overall. Re-measure before changing this, and re-measure when changing model. */
+    chunkTranscript(text, maxChars = 12000) {
         const sentences = text
             .replace(/\s+/g, ' ')
             .replace(/([.!?])\s+/g, '$1\n')
@@ -1002,90 +1144,144 @@ class AiSummarizeStage extends BaseStage {
         return chunks;
     }
 
+    /** The chunk rewrite asks for Markdown prose and NOTHING else — no JSON wrapper.
+     *
+     * It used to ask for `{"chunk_index": n, "content": "<12k chars of prose>"}`, which made the
+     * model responsible for escaping every quote and newline in a Spanish text full of `**bold**`
+     * and dialogue. It could not do it reliably: two of three videos in a single run died on
+     * `JSON5: invalid character` / `missing JSON delimiters`, and the prompt had degenerated into
+     * begging ("Never use double quotes"). Four separate repair functions downstream still did not
+     * save it, because a mid-string unescaped quote is genuinely unrecoverable — you cannot tell
+     * where the value was meant to end.
+     *
+     * With raw prose there is nothing to escape and nothing to parse, so this class of failure is
+     * gone by construction. `chunk_index` is not asked for either: the caller already knows the
+     * index, and trusting the model to renumber its own chunks was how ordering could silently
+     * scramble. */
     buildChunkPrompt(chunk, index, total) {
-        if (OVERRIDE_LANG) {
-            return `
-                You are an expert Editor and Translator. You are processing PART ${index} of ${total}.
+        const languageRule = OVERRIDE_LANG
+            ? `Write the output in ${OVERRIDE_LANG}. Replace the original text entirely — never emit
+                the source text alongside the translation, and never write "original (translation)".
+                The audience speaks ONLY ${OVERRIDE_LANG}.`
+            : `Write in the same language as the transcript. Do NOT translate.`;
 
-                ### GOAL
-                Produce a **clean, native ${OVERRIDE_LANG} version** of the text, formatted with Markdown for readability.
+        return `
+            You are an expert Editor. You are processing PART ${index} of ${total} of a video transcript.
 
-                ### CRITICAL RULE: NO INTERLEAVING
-                - **NEVER** output the original English text.
-                - **NEVER** output "English text (${OVERRIDE_LANG} translation)".
-                - **REPLACE** the original text entirely with ${OVERRIDE_LANG}.
-                - The audience speaks **ONLY ${OVERRIDE_LANG}**.
+            ### GOAL
+            Rewrite the text below as clean, readable Markdown prose.
 
-                ### MARKDOWN FORMATTING RULES (Apply inside the "content" field):
-                1. **Paragraphs & Dialogues:** You MUST use double line breaks (\n\n) to visually separate paragraphs and different speakers.
-                2. **Emphasis:** Use **bold** (double asterisks) for key terms, emphasized words, or loud speech found in the source.
-                3. **Structure:** Do not create big blocks of text. Break it down so it is easy to read.
+            ### FIDELITY — THIS IS THE MOST IMPORTANT RULE
+            - Output the FULL text. Do NOT shorten, summarize, or omit anything.
+            - Do NOT add, interpret, or embellish. Say only what the speaker says.
+            - Your output should be roughly the same length as the input.
 
-                ### OUTPUT FORMAT (Strict JSON):
-                Return ONLY a single valid JSON object. No code blocks. No intro text.
-                Ensure the "content" string is properly escaped for JSON if necessary.
+            ### LANGUAGE
+            ${languageRule}
 
-                {
-                    "chunk_index": ${index},
-                    "content": "Aquí va la traducción completa en ${OVERRIDE_LANG} formato MARKDOWN MANDATORY.\\n\\nUsa saltos de línea para separar párrafos.\\n\\nUsa **negrita** para resaltar ideas clave."
+            ### FORMATTING — PARAGRAPH LENGTH IS STRICT
+            1. A paragraph is AT MOST 4 sentences. As soon as you reach 4 sentences, or the topic
+               shifts, or the speaker changes, end the paragraph with a blank line and start a new one.
+               A spoken transcript naturally runs on for pages without a single break — do not carry
+               that over. Never write a paragraph longer than about 500 characters.
+            2. Use **bold** for key terms and for words the speaker emphasizes.
+            3. Fix punctuation and capitalization.
+
+            ### OUTPUT FORMAT
+            Return ONLY the rewritten text itself. No JSON, no code fences, no preamble,
+            no "Here is the rewritten text", no closing commentary.
+
+            ### INPUT TEXT:
+            ${chunk}
+        `.trim();
+    }
+
+    /** Strips a reasoning model's leftover scaffolding: a ```fence around the whole answer, or a
+     * lead-in line like "Here is the rewritten text:". Everything else is kept verbatim — this must
+     * never be lossy, the prose it is cleaning IS the deliverable. */
+    cleanProse(raw) {
+        let out = raw.trim();
+
+        const fenced = out.match(/^```(?:markdown|md|text)?\s*\n([\s\S]*?)\n?```$/i);
+        if (fenced) out = fenced[1].trim();
+
+        return out.replace(/^(?:here(?:'s| is)[^\n:]*:|sure[^\n:]*:|okay[^\n:]*:)\s*\n+/i, '').trim();
+    }
+
+    /** A deterministic backstop for the "max 4 sentences per paragraph" prompt rule.
+     *
+     * A spoken transcript is one long run-on by nature, and asking nicely was not enough on its
+     * own: real runs came back with single paragraphs spanning an entire 12k-char chunk (measured:
+     * 12,793 / 11,931 / 11,515 chars — a wall of text ~150 lines tall). Since fidelity requires
+     * every word to survive, this only re-inserts blank lines at sentence boundaries; it never
+     * drops or rewrites text. Headings, list items, quotes and code fences are left untouched so it
+     * can't mangle Markdown structure the model did produce correctly. */
+    rewrapLongParagraphs(text, maxChars = 500, maxSentences = 4) {
+        return text
+            .split(/\n{2,}/)
+            .map((para) => {
+                const trimmed = para.trim();
+                if (!trimmed || trimmed.length <= maxChars) return trimmed;
+                if (/^(#{1,6}\s|[-*+]\s|\d+[.)]\s|>|```)/.test(trimmed)) return trimmed;
+
+                // Split into sentences WITHOUT risking dropping any text. An earlier version matched
+                // sentences with a greedy alternation regex, which requires whitespace-or-end
+                // immediately after the terminator — a sentence ending in a closing quote
+                // ("...existen.\" Perfecto.") has no such gap, the match failed, and `.match()`
+                // silently drops any unmatched stretch of the string along with it.
+                //
+                // Splitting on a ZERO-WIDTH position instead (lookbehind for the terminator, lookahead
+                // for the following whitespace) consumes no characters at all, so `sentences.join('')`
+                // always reconstructs `trimmed` exactly — lossless by construction, regardless of what
+                // punctuation pattern the transcript throws at it.
+                const sentences = trimmed.split(/(?<=[.!?]+["'”’)\]]*)(?=\s)/);
+                const groups = [];
+                let current = '', count = 0;
+                for (const s of sentences) {
+                    if (current && (count >= maxSentences || (current + s).length > maxChars)) {
+                        groups.push(current.trim());
+                        current = s;
+                        count = 1;
+                    } else {
+                        current += s;
+                        count++;
+                    }
                 }
-
-                ### INPUT TEXT:
-                ${chunk}
-            `.trim();
-        }  else {
-            return `
-                You are an expert Editor. You are processing PART ${index} of ${total}.
-
-                ### GOAL
-                Produce a **clean, native full version** of the text, formatted with Markdown for readability.
-
-                ### CRITICAL RULE: NO INTERLEAVING
-                - Write in the same language as the transcript. Do NOT translate.
-                - Output the full text DO NOT shorten.
-
-                ### MARKDOWN FORMATTING RULES (Apply inside the "content" field):
-                1. **Paragraphs & Dialogues:** You MUST use double line breaks (\n\n) to visually separate paragraphs and different speakers.
-                2. **Emphasis:** Use **bold** (double asterisks) for key terms, emphasized words, or loud speech found in the source.
-                3. **Structure:** Do not create big blocks of text. Break it down so it is easy to read.
-
-                ### OUTPUT FORMAT (Strict JSON):
-                Return ONLY a single valid JSON object. No code blocks. No intro text.
-                Ensure the "content" string is properly escaped for JSON if necessary.
-
-                {
-                    "chunk_index": ${index},
-                    "content": "Here put the content, write in the same language as the transcript. Do NOT translate, MARKDOWN FORMAT MANDATORY.\\n\\nUsa saltos de línea para separar párrafos.\\n\\nUsa **negrita** para resaltar ideas clave."
-                }
-
-                ### INPUT TEXT:
-                ${chunk}
-            `.trim();
-        }      
+                if (current.trim()) groups.push(current.trim());
+                return groups.join('\n\n');
+            })
+            .join('\n\n');
     }
 
     async processChunks(chunks) {
         const results = [];
 
         for (let i = 0; i < chunks.length; i++) {
-            const MAX_RETRIES = 2;
-            let rawContent;
+            const chunkStart = Date.now();
+            const input = chunks[i];
 
-            for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-                const prompt = this.buildChunkPrompt(chunks[i], i + 1, chunks.length);
-                ({ rawContent } = (await this.aiClient.generateContent(prompt)));
+            console.log(`   ▶️  Chunk ${i + 1}/${chunks.length} (${input.length} chars) — iniciando...`);
 
-                const trimmed = rawContent.trim();
-                if (trimmed.startsWith('{') || trimmed.startsWith('[')) break;
+            const prompt = this.buildChunkPrompt(input, i + 1, chunks.length);
+            const { rawContent } = await this.aiClient.generateContent(prompt);
+            const content = this.rewrapLongParagraphs(this.cleanProse(rawContent));
 
-                console.warn(`   ⚠️ Chunk ${i + 1} attempt ${attempt}: model returned non-JSON, retrying...`);
-                if (attempt === MAX_RETRIES) {
-                    throw new Error(`Chunk ${i + 1}: model returned non-JSON after ${MAX_RETRIES} attempts: ${trimmed.slice(0, 80)}`);
-                }
+            if (!content) {
+                throw new Error(`Chunk ${i + 1}/${chunks.length}: model returned an empty rewrite`);
             }
 
-            console.log(`   Processed chunk ${i + 1}/${chunks.length} ...`);
-            results.push(rawContent);
+            // A faithful rewrite comes back at ~1x the input; the measured healthy range is
+            // 0.99-1.03x. Anything near half means the model summarized instead of rewriting, which
+            // is silent data loss — the old code would have shipped it. Warn loudly rather than
+            // throw: a partially short chunk is still worth keeping and reviewing.
+            const ratio = content.length / input.length;
+            if (ratio < 0.6) {
+                console.warn(`   ⚠️ Chunk ${i + 1}/${chunks.length} salió corto: ${content.length} chars ` +
+                    `sobre ${input.length} (${ratio.toFixed(2)}x) — el modelo puede haber resumido en vez de reescribir`);
+            }
+
+            console.log(`   ✅ Chunk ${i + 1}/${chunks.length} completado en ${Math.round((Date.now() - chunkStart) / 1000)}s (${ratio.toFixed(2)}x)`);
+            results.push(content);
         }
 
         return results;
@@ -1093,76 +1289,52 @@ class AiSummarizeStage extends BaseStage {
 
     async buildRawTranscript(rawTranscript) {
         const chunks = this.chunkTranscript(rawTranscript);
+        console.log(`   ✂️  Transcript (${rawTranscript.length} chars) split into ${chunks.length} chunk(s): [${chunks.map(c => c.length).join(', ')}]`);
         const chunkResults = await this.processChunks(chunks);
 
         return chunkResults;
     }
 
-    extractStrict(raw) {
-        const match = raw.match(/BEGIN_JSON\s*([\s\S]*?)\s*END_JSON/);
-        if (!match) {
-            throw new Error("Invalid AI output: missing JSON delimiters");
-        }
-        return match[1].trim();
-    }
-
     async _callAI(transcript) {
 
+        // Two short scalar fields on their own lines, then the prose as the rest of the message.
+        // The summary is Markdown with headings, bullets and quotes, so it cannot live inside a JSON
+        // string without flawless escaping — see buildChunkPrompt for why that failed. Here the
+        // scalars are trivially parseable and the prose needs no parsing at all.
+        //
+        // Note there is deliberately no "model_used" field. It used to be requested, and the skeleton
+        // in this very prompt showed it pre-filled as "deepseek" — which the model dutifully copied,
+        // so every summary reported "deepseek" no matter what actually ran. The real model name is
+        // already known in code and does not need to round-trip through the model.
         const prompt = `
-            You are an automated system producing machine-readable output.
+            You are an expert analyst. Read the transcript at the end of this message and produce a
+            structured summary of it.
 
-            You MUST return exactly ONE JSON object.
-            The JSON MUST be enclosed between the delimiters BEGIN_JSON and END_JSON.
-            No text is allowed before BEGIN_JSON or after END_JSON.
+            ### OUTPUT FORMAT — follow this EXACTLY
+            Line 1: TITLE: followed by the most likely video title, inferred strictly from the transcript.
+            Line 2: LANGUAGE: followed by the transcript's original language in English (e.g. Spanish, English, French).
+            Line 3: the marker SUMMARY: on a line of its own.
+            Everything after that marker: the summary itself, as free-form Markdown.
 
-            The JSON object MUST strictly conform to schema:
-            - Name: YouTubeTranscriptAnalysis
-            - Version: 1.0
-            - additionalProperties: false
+            Emit nothing before TITLE: and nothing after the summary. No JSON, no code fences, no commentary.
 
-            The JSON object MUST contain EXACTLY these fields, with the following meaning:
-
-            - "schema_version":
-            string, MUST be exactly "1.0".
-
-            - "title":
-            string containing the most likely video title inferred strictly from the transcript.
-            Do NOT invent titles unrelated to the transcript.
-
-            - "language":
-            string indicating the original language detected in the transcript
-            (e.g., "Spanish", "English", "French").
-
-            - "model_used":
-            string identifying the model used.
-
-            - "content":
-            string containing an exhaustive, structured summary strictly grounded in the transcript.
-            Do NOT invent, assume, or add external information. Never use double quotes , use sigle quotes for emphasis.
-            Highlight key points, main arguments, and conclusions explicitly stated in the transcript.
-            Include only explanations or examples that appear verbatim or are directly paraphrased.
-            Use Markdown formatting (headings, bullet lists, bold text) inside the string to improve readability.
-            ${OVERRIDE_LANG
+            ### SUMMARY REQUIREMENTS
+            - Be exhaustive and strictly grounded in the transcript. Do NOT invent, assume, or add
+              outside information, and do NOT draw conclusions the speaker does not state.
+            - Cover the key points, main arguments and explicit conclusions.
+            - Use Markdown headings, bullet lists and **bold** for readability. Quotes and any
+              punctuation you need are fine — this is plain Markdown, not a quoted string.
+            - ${OVERRIDE_LANG
                 ? `Write in ${OVERRIDE_LANG}.`
                 : `Write in the same language as the transcript. Do NOT translate.`}
 
-            Rules:
-            - Do NOT include comments.
-            - Do NOT include trailing commas.
-            - Do NOT wrap the JSON in Markdown or code fences.
-            - Do NOT include explanations or extra text.
-            - The output MUST be parseable using JSON.parse().
-            - If you cannot fully comply, return NOTHING.
+            ### EXAMPLE SHAPE
+            TITLE: The title inferred from the transcript
+            LANGUAGE: Spanish
+            SUMMARY:
+            ## First theme
 
-            BEGIN_JSON
-            {
-            "schema_version": "1.0",
-            "title": "",
-            "language": "",
-            "model_used": "deepseek",
-            "content": ""
-            }
-            END_JSON
+            - A key point the speaker actually makes.
 
             TRANSCRIPT:
             ---
@@ -1171,9 +1343,15 @@ class AiSummarizeStage extends BaseStage {
             `;
 
 
+        console.log(`   📝 [PASO 1/2] Generando resumen corto...`);
+        const step1Start = Date.now();
         const { client, model, rawContent } = await this.aiClient.generateContent(prompt);
+        console.log(`   ✅ [PASO 1/2] Resumen corto listo en ${Math.round((Date.now() - step1Start) / 1000)}s`);
 
+        console.log(`   📝 [PASO 2/2] Generando versión completa reescrita (chunk por chunk, más lento)...`);
+        const step2Start = Date.now();
         const fullContentChunks = await this.buildRawTranscript(transcript) || ""
+        console.log(`   ✅ [PASO 2/2] Versión completa lista en ${Math.round((Date.now() - step2Start) / 1000)}s`);
 
         return {
             fullContentChunks: fullContentChunks,
@@ -1187,6 +1365,7 @@ class AiSummarizeStage extends BaseStage {
 
         const videoId = extractVideoIdFromPath(filePath);
 
+        const fileStart = Date.now();
         try {
             console.log(`   Processing: ${filePath}...`);
 
@@ -1221,6 +1400,8 @@ class AiSummarizeStage extends BaseStage {
 
             await this.logSuccess([filePath], [outPath]);
 
+            console.log(`   🏁 ${videoId} completado en ${Math.round((Date.now() - fileStart) / 1000)}s`);
+
         } catch (err) {
             console.error(`   ❌ Error processing ${filePath}: ${err.message}`, err);
             await this.moveToError([filePath], err);
@@ -1239,110 +1420,47 @@ class InterpretSummaryStage extends BaseStage {
         });
     }
 
-    extractJsonBlock(raw) {
-        if (!raw) return raw;
+    /** Reads the TITLE / LANGUAGE / SUMMARY: shape that AiSummarizeStage._callAI asks for.
+     *
+     * This replaced a JSON parse guarded by three escalating repair passes (a string-escaping state
+     * machine, a "content"-value regex rewrite, and a code-fence stripper). They existed because the
+     * summary's Markdown had to survive being quoted inside JSON, and they still lost two of three
+     * videos in one run. Here the scalars are two anchored lines and the prose is simply the rest of
+     * the message, so nothing about the summary's own punctuation can break parsing.
+     *
+     * The scalars are tolerant on purpose — leading indentation, optional bold, `**TITLE:**` — but
+     * the SUMMARY: marker is required: without it there is no way to tell where prose begins, and
+     * guessing would silently fold the title line into the body. */
+    parseSummary(raw) {
+        if (!raw || !raw.trim()) throw new Error("Invalid AI output: empty summary response");
 
-        const match = raw.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
-        return match ? match[1].trim() : raw.trim();
-    }
+        const scalar = (field) => {
+            const m = raw.match(new RegExp(`^[ \\t>*_]*${field}\\s*:?\\**\\s*:?[ \\t]*(.+?)[ \\t]*$`, 'im'));
+            return m ? m[1].replace(/^\**|\**$/g, '').trim() : '';
+        };
 
-
-    sanitizeChunk(raw) {
-        // Escape literal newlines/tabs inside JSON string values
-        let out = '';
-        let inString = false;
-        let escaped = false;
-        for (let i = 0; i < raw.length; i++) {
-            const ch = raw[i];
-            if (escaped) {
-                // If the character after \ is not a valid JSON escape, drop the backslash
-                if (!'"\\/bfnrtu'.includes(ch)) {
-                    out += ch;
-                } else {
-                    out += '\\' + ch;
-                }
-                escaped = false;
-                continue;
-            }
-            if (ch === '\\' && inString) { escaped = true; continue; }
-            if (ch === '"' && !escaped) { inString = !inString; }
-            if (inString && ch === '\n') { out += '\\n'; continue; }
-            if (inString && ch === '\r') { out += '\\r'; continue; }
-            if (inString && ch === '\t') { out += '\\t'; continue; }
-            out += ch;
-        }
-        return out;
-    }
-
-    extractContent(parsed) {
-        // Model sometimes returns "content pretty" or other variants instead of "content"
-        if (parsed.content !== undefined) return parsed.content;
-        const key = Object.keys(parsed).find(k => k.toLowerCase().startsWith('content'));
-        return key ? parsed[key] : '';
-    }
-
-    async processChunks(chunks) {
-        const results = [];
-
-        for (let i = 0; i < chunks.length; i++) {
-            const raw = chunks[i]?.trim();
-
-            // Skip chunks that are not JSON at all (e.g. model replied conversationally)
-            if (!raw || (!raw.startsWith('{') && !raw.startsWith('['))) {
-                console.warn(`   ⚠️ Skipping chunk ${i + 1}: not valid JSON (non-JSON model response)`);
-                continue;
-            }
-
-            let parsed;
-            try {
-                parsed = JSON5.parse(raw);
-            } catch {
-                try {
-                    parsed = JSON5.parse(this.sanitizeChunk(raw));
-                } catch (err) {
-                    console.error(`   ❌ Error parsing chunk ${i + 1}: ${err.message}`);
-                    console.warn(`   ⚠️ Skipping chunk ${i + 1} due to unrecoverable parse error`);
-                    continue;
-                }
-            }
-
-            results.push({
-                index: parsed.chunk_index,
-                content: this.extractContent(parsed)
-            });
+        const marker = raw.match(/^[ \t>*_]*SUMMARY\s*:?\**\s*:?[ \t]*$/im);
+        if (!marker) {
+            throw new Error(
+                `Invalid AI output: no SUMMARY: marker found, so the prose body cannot be located ` +
+                `(response started with: ${raw.trim().slice(0, 120).replace(/\n/g, ' ')})`
+            );
         }
 
-        return results;
+        const body = raw.slice(marker.index + marker[0].length).trim();
+        if (!body) throw new Error("Invalid AI output: SUMMARY: marker present but the body is empty");
+
+        return { title: scalar('TITLE'), language: scalar('LANGUAGE'), content: body };
     }
 
-    assembleFullContent(chunkResults) {
-        return chunkResults
-            .sort((a, b) => a.index - b.index)
-            .map(c => (c.content ?? '').trim())
+    /** The chunks arrive as plain Markdown in the order they were generated, so "assembling" is a
+     * join. Order comes from the array index, not from a model-reported chunk_index that used to be
+     * sorted on — and a chunk can no longer be dropped here, because there is nothing left to parse. */
+    assembleFullContent(chunks) {
+        return (chunks || [])
+            .map(c => (typeof c === 'string' ? c : '').trim())
+            .filter(Boolean)
             .join('\n\n');
-    }
-
-    extractStrict(raw) {
-        const match = raw.match(/BEGIN_JSON\s*([\s\S]*?)\s*END_JSON/);
-        if (!match) {
-            throw new Error("Invalid AI output: missing JSON delimiters");
-        }
-        return match[1].trim();
-    }
-
-    robustSanitize(rawJson) {
-        // 1. Identificamos dónde empieza y termina el valor de "content"
-        // Buscamos la clave "content": y capturamos todo hasta el final del objeto
-        const contentRegex = /("content"\s*:\s*")([\s\S]*?)("\s*\n?\s*})/;
-
-        return rawJson.replace(contentRegex, (match, prefix, content, suffix) => {
-            // 2. En el bloque 'content', reemplazamos saltos de línea reales por \n
-            const sanitizedContent = content
-                .replace(/\r?\n/g, '\\n') // Convierte Enter en la cadena \n
-                .replace(/"/g, "'");      // Opcional: cambia comillas dobles internas por simples para evitar cierres prematuros
-
-            return prefix + sanitizedContent + suffix;
-        });
     }
 
     async execute(filePath) {
@@ -1363,50 +1481,32 @@ class InterpretSummaryStage extends BaseStage {
                 );
             }
 
-            // Clean common artifacts (e.g., if model wraps response in ```json ... ```)
+            const parsed = this.parseSummary(data.rawContent);
+            const fullContent = this.assembleFullContent(data.fullContentChunks);
 
-            let cleanedJson = this.extractStrict(data.rawContent);
+            const title = parsed.title || "Untitled Video";
 
-            // console.log(`   Cleaned JSON: ${cleanedJson}`);
-
-            let parsed;
-
-            // --- PASO DE RESCATE ---
-            try {
-                // Intentamos parsear normal
-                parsed = JSON5.parse(cleanedJson);
-            } catch (e) {
-                console.log(`   ⚠️ JSON corrupto detectado, intentando reparación robusta...`);
-                // Si falla, aplicamos la limpieza de saltos de línea internos
-                cleanedJson = this.robustSanitize(cleanedJson);
-                parsed = JSON5.parse(cleanedJson);
-            }
-
-            // console.log(`   Chunks: `, data.fullContentChunks);
-
-            const chunks = await this.processChunks(data.fullContentChunks)
-
-            const fullContent = await this.assembleFullContent(chunks) || ""
-
-            // Create final Markdown content
-            const mdContent = `# ${parsed.title}
-
-                ${parsed.content}`;
-
-            // console.log(`   Parsed JSON: `, parsed);
+            // The .md used to hold only the short summary, while the email template pulled BOTH
+            // summaryBody and fullContent — so the file on disk silently lacked the transcript
+            // rewrite that took the bulk of the run's compute. Same document in both places now.
+            const markdown = [
+                `# ${title}`,
+                parsed.content,
+                fullContent ? `---\n\n## Transcripción completa\n\n${fullContent}` : '',
+            ].filter(Boolean).join('\n\n');
 
             const enrichedData = {
                 ...data,
-                title: parsed.title || "Untitled Video",
+                title,
                 language: parsed.language || "Unknown",
-                model: parsed.model_used || model,
+                // data.model is what AiSummarizeStage recorded from the client that actually ran.
+                // This used to read `parsed.model_used || model` — a bare `model` that was never in
+                // scope, so any transcript without the field crashed with a ReferenceError instead.
+                model: data.model,
                 summaryBody: parsed.content || "",
                 fullContent: fullContent,
-                // client,
-                markdown: parsed.content || "",
+                markdown,
             };
-
-            // console.log(`  assembleFullContent: `, fullContent);
 
             // --- outputs ---
             const jsonOut = path.join(this.outputDir, `${videoId}.enriched.json`);
@@ -1414,7 +1514,7 @@ class InterpretSummaryStage extends BaseStage {
 
             await Promise.all([
                 fs.writeFile(jsonOut, JSON.stringify(enrichedData, null, 2)),
-                fs.writeFile(mdOut, `# ${parsed.title}\n\n${parsed.content}`)
+                fs.writeFile(mdOut, markdown)
             ]);
 
             await this.logSuccess([filePath], [jsonOut, mdOut]);
@@ -1476,7 +1576,11 @@ class EmailStage extends BaseStage {
             const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
 
             // 3) Convert Markdown → HTML
-            const bodyHtml = marked(enrichedData.markdown);
+            // summaryBody, NOT markdown: this template lays out the two parts itself, with its own
+            // "Contenido completo" heading before fullContentHtml below. `markdown` is now the
+            // complete standalone document (summary + transcript) for the .md file, so using it here
+            // would render the whole transcript twice.
+            const bodyHtml = marked(enrichedData.summaryBody || '');
 
             // console.log(`   fullContent for: ${enrichedData.fullContent.substring(0, 120)}...`,);
             const fullContentHtml = marked(enrichedData.fullContent + "\n\n");
@@ -1565,8 +1669,8 @@ async function moveOutputs(srcDir, destDir, filterFn) {
 
 async function main() {
     // 1. Configure AI
-    // Options: 'deepseek', 'qwen', 'gemini', 'lmstudio'
-    const provider = 'lmstudio';
+    // Options: 'lmstudio' (local), 'nvidia', 'gemini', 'deepseek'
+    const provider = process.env.AI_PROVIDER || 'lmstudio';
     const aiClient = createAiClient(provider);
 
     const logger = new EventLogger();
