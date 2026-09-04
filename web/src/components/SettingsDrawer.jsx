@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useTranslations } from 'next-intl';
-import { Loader2, Settings as SettingsIcon } from 'lucide-react';
+import { Loader2, RotateCcw, Settings as SettingsIcon } from 'lucide-react';
 import { Sheet, SheetContent } from './ui/sheet.jsx';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from './ui/tabs.jsx';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select.jsx';
@@ -99,12 +99,41 @@ function LlmTab({ settings, save, t }) {
     }
     return initial;
   });
+  // Cache por proveedor: {status: 'idle'|'loading'|'ready'|'error', models, error} — no se
+  // vuelve a pedir cada vez que se cambia de pestaña y se vuelve, solo al cambiar de proveedor
+  // (la primera vez) o al pulsar el boton de refrescar.
+  const [modelLists, setModelLists] = useState({});
   const [status, run] = useSaveStatus();
 
   const draft = drafts[provider];
+  const modelList = modelLists[provider];
+
   function patchDraft(field, value) {
     setDrafts((d) => ({ ...d, [provider]: { ...d[provider], [field]: value } }));
   }
+
+  async function fetchModels() {
+    setModelLists((m) => ({ ...m, [provider]: { status: 'loading' } }));
+    try {
+      const res = await fetch('/api/settings/models', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider, apiKey: draft.apiKey || undefined, baseUrl: draft.baseUrl || undefined }),
+      });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+      setModelLists((m) => ({ ...m, [provider]: { status: 'ready', models: body.models } }));
+    } catch (err) {
+      setModelLists((m) => ({ ...m, [provider]: { status: 'error', error: err.message } }));
+    }
+  }
+
+  // Se pide la lista sola la primera vez que se entra a cada proveedor — asi el combo ya
+  // viene poblado sin que haga falta acordarse de pulsar "refrescar".
+  useEffect(() => {
+    if (!modelLists[provider]) fetchModels();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [provider]);
 
   function onSave() {
     run(async () => {
@@ -115,6 +144,13 @@ function LlmTab({ settings, save, t }) {
       setDrafts((d) => ({ ...d, [provider]: { ...d[provider], apiKey: '', hasKey: view.llm.providers[provider].hasKey } }));
     });
   }
+
+  // El modelo actual siempre aparece en el combo aunque el catalogo devuelto no lo incluya
+  // (por ejemplo, uno ya guardado que el proveedor retiro) — si no, se veria un combo vacio
+  // encima de un modelo que sigue configurado.
+  const options = modelList?.status === 'ready'
+    ? [...new Set([draft.model, ...modelList.models].filter(Boolean))]
+    : [];
 
   return (
     <div className="flex flex-col gap-4">
@@ -134,11 +170,40 @@ function LlmTab({ settings, save, t }) {
 
       <label className="flex flex-col gap-1.5">
         <span className="text-sm font-medium text-text">{t('llmModel')}</span>
-        <input
-          value={draft.model}
-          onChange={(e) => patchDraft('model', e.target.value)}
-          className="rounded-lg border border-border bg-card px-3 py-2 text-sm text-text focus:outline-none focus:ring-2 focus:ring-ring"
-        />
+        <div className="flex gap-1.5">
+          {modelList?.status === 'ready' && options.length > 0 ? (
+            <Select value={draft.model} onValueChange={(v) => patchDraft('model', v)}>
+              <SelectTrigger className="flex-1">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {options.map((m) => (
+                  <SelectItem key={m} value={m}>{m}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          ) : (
+            <input
+              value={draft.model}
+              onChange={(e) => patchDraft('model', e.target.value)}
+              placeholder={modelList?.status === 'loading' ? t('llmModelsLoading') : t('llmModelsFreeText')}
+              className="flex-1 rounded-lg border border-border bg-card px-3 py-2 text-sm text-text placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-ring"
+            />
+          )}
+          <button
+            type="button"
+            onClick={fetchModels}
+            disabled={modelList?.status === 'loading'}
+            title={t('llmModelsRefresh')}
+            aria-label={t('llmModelsRefresh')}
+            className="flex items-center justify-center rounded-lg border border-border px-2.5 text-muted transition-colors hover:bg-accent hover:text-text disabled:opacity-60"
+          >
+            <RotateCcw size={14} className={modelList?.status === 'loading' ? 'animate-spin' : ''} />
+          </button>
+        </div>
+        {modelList?.status === 'error' && (
+          <span className="text-xs text-error">{t('llmModelsFailed', { error: modelList.error })}</span>
+        )}
       </label>
 
       {provider !== 'gemini' && (

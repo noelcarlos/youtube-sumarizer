@@ -352,6 +352,39 @@ export function createAiClient(provider, overrides = {}) {
     }
 }
 
+/** Lista real de modelos que ofrece CADA proveedor, para el combo de Settings — nada
+ * hardcodeado, porque un catalogo estatico se queda obsoleto en cuanto el proveedor sube un
+ * modelo nuevo (o en LMStudio, en cuanto el usuario carga uno distinto en su propio servidor).
+ * `overrides.apiKey`/`overrides.baseUrl` dejan probar una key/URL que el usuario acaba de
+ * escribir en el formulario y todavia no ha guardado. */
+export async function listModels(provider, overrides = {}) {
+    switch (provider) {
+        case 'lmstudio': {
+            const client = new OpenAI({ apiKey: overrides.apiKey || LMSTUDIO_API_KEY || 'lm-studio', baseURL: overrides.baseUrl || LMSTUDIO_BASE_URL });
+            const list = await client.models.list();
+            return list.data.map(m => m.id).sort();
+        }
+        case 'nvidia': {
+            const client = new OpenAI({ apiKey: requireKey(overrides.apiKey || NVIDIA_API_KEY, provider, 'NVIDIA_API_KEY'), baseURL: overrides.baseUrl || NVIDIA_BASE_URL });
+            const list = await client.models.list();
+            return list.data.map(m => m.id).sort();
+        }
+        case 'deepseek': {
+            const client = new OpenAI({ apiKey: requireKey(overrides.apiKey || DEEPSEEK_API_KEY, provider, 'DEEPSEEK_API_KEY'), baseURL: overrides.baseUrl || DEEPSEEK_BASE_URL });
+            const list = await client.models.list();
+            return list.data.map(m => m.id).sort();
+        }
+        case 'gemini': {
+            const ai = new GoogleGenAI({ apiKey: requireKey(overrides.apiKey || GEMINI_API_KEY, provider, 'GEMINI_API_KEY') });
+            const pager = await ai.models.list();
+            const ids = [];
+            for await (const m of pager) ids.push((m.name || '').replace(/^models\//, ''));
+            return ids.filter(Boolean).sort();
+        }
+        default: throw new Error(`Unknown provider: ${provider}. Valid: gemini, deepseek, nvidia, lmstudio`);
+    }
+}
+
 export function healAIJson(raw) {
     let clean = raw || "";
 

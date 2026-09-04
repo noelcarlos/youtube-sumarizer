@@ -16,7 +16,7 @@ import path from 'node:path';
 import { marked } from 'marked';
 import nodemailer from 'nodemailer';
 import {
-    DIRS, initDirs, EventLogger, moveOutputs, runStageWorker, createAiClient, AI_PROVIDER_DEFAULTS,
+    DIRS, initDirs, EventLogger, moveOutputs, runStageWorker, createAiClient, listModels, AI_PROVIDER_DEFAULTS,
     ProcessInputsStage, DownloadStage, AiSummarizeStage, InterpretSummaryStage, EmailStage,
     EMAIL_CONFIG,
 } from './resumir_video.js';
@@ -424,6 +424,30 @@ const server = http.createServer(async (req, res) => {
                 // createAiClient lanza si el proveedor elegido no tiene API key todavia (por
                 // ejemplo, se cambio a "gemini" pero aun no se ha escrito la key) — 400, no 500,
                 // porque es un dato de entrada invalido, no un fallo del servidor.
+                return sendJson(res, 400, { error: err.message });
+            }
+        }
+
+        if (req.method === 'POST' && url.pathname === '/api/settings/models') {
+            let body = '';
+            for await (const chunk of req) body += chunk;
+            let parsed;
+            try { parsed = JSON.parse(body || '{}'); } catch { return sendJson(res, 400, { error: 'JSON invalido' }); }
+            const provider = parsed.provider;
+            if (!provider) return sendJson(res, 400, { error: 'falta "provider"' });
+            try {
+                // Si el usuario todavia no escribio una key/URL nueva en el formulario, se
+                // prueba con la ya guardada en Settings — asi el combo funciona tanto para
+                // "quiero ver los modelos de lo que ya tengo configurado" como para "acabo de
+                // pegar una key nueva, a ver que modelos trae".
+                const saved = settings.llm.overrides[provider] || {};
+                const overrides = {
+                    apiKey: parsed.apiKey || saved.apiKey,
+                    baseUrl: parsed.baseUrl || saved.baseUrl,
+                };
+                const models = await listModels(provider, overrides);
+                return sendJson(res, 200, { models });
+            } catch (err) {
                 return sendJson(res, 400, { error: err.message });
             }
         }
