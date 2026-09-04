@@ -190,7 +190,7 @@ export function VideoCard({ video, onOpenReader }) {
               <button
                 onClick={cancel}
                 disabled={cancelling}
-                className="flex items-center gap-1 text-sm text-error hover:text-red-700 disabled:opacity-60"
+                className="flex items-center gap-1 rounded-lg border border-error/30 bg-error/10 px-2.5 py-1 text-sm font-medium text-error transition-colors hover:bg-error/20 disabled:opacity-60"
               >
                 <X size={12} />
                 {cancelling ? t('cancelling') : t('cancel')}

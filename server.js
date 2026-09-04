@@ -210,14 +210,15 @@ function videoIdFromFilename(filename) {
 async function buildState() {
     const byVideo = new Map();
 
-    const record = (videoId, stageName, bucket, filename) => {
-        if (!byVideo.has(videoId)) byVideo.set(videoId, { videoId, stage: stageName, bucket, files: [] });
+    const record = (videoId, stageName, bucket, filename, fullPath) => {
+        if (!byVideo.has(videoId)) byVideo.set(videoId, { videoId, stage: stageName, bucket, files: [], paths: [] });
         const v = byVideo.get(videoId);
         // Se recorre en orden de avance del pipeline, asi que la ultima vez que se ve un
         // videoId es su etapa MAS AVANZADA — es justo lo que queremos mostrar.
         v.stage = stageName;
         v.bucket = bucket;
         v.files.push(filename);
+        v.paths.push(fullPath);
     };
 
     for (const stageName of STAGE_ORDER) {
@@ -226,12 +227,22 @@ async function buildState() {
         for (const bucket of ['INPUT', 'OUTPUT', 'ERROR']) {
             const dirPath = dirs[bucket];
             if (!dirPath) continue;
-            for (const f of await listDir(dirPath)) record(videoIdFromFilename(f), stageName, bucket.toLowerCase(), f);
+            for (const f of await listDir(dirPath)) record(videoIdFromFilename(f), stageName, bucket.toLowerCase(), f, path.join(dirPath, f));
         }
     }
-    for (const f of await listDir(DIRS.DONE)) record(videoIdFromFilename(f), 'DONE', 'output', f);
+    for (const f of await listDir(DIRS.DONE)) record(videoIdFromFilename(f), 'DONE', 'output', f, path.join(DIRS.DONE, f));
 
-    return [...byVideo.values()];
+    const videos = [...byVideo.values()];
+    // `updatedAt` = el mtime MAS RECIENTE entre todos los ficheros de ese video, sin importar en
+    // que etapa/bucket estan — asi un video que acaba de fallar o de terminar sube al principio
+    // de la lista igual, en vez de quedar enterrado en orden alfabetico entre otros 130.
+    await Promise.all(videos.map(async (v) => {
+        const mtimes = await Promise.all(v.paths.map(p => fs.stat(p).then(s => s.mtimeMs).catch(() => 0)));
+        v.updatedAt = Math.max(0, ...mtimes);
+        delete v.paths;
+    }));
+
+    return videos;
 }
 
 const ACTIVE_BY_STAGE = {
@@ -492,7 +503,10 @@ const server = http.createServer(async (req, res) => {
                 if (v.bucket === 'error') e.lastError = await lastErrorFor(v.videoId);
                 return { ...e, ...activeInfoFor(v) };
             }));
-            enriched.sort((a, b) => STAGE_ORDER.indexOf(a.stage) - STAGE_ORDER.indexOf(b.stage) || a.videoId.localeCompare(b.videoId));
+            // Mas recientemente actualizado primero — no por etapa/orden alfabetico, para que lo
+            // que acaba de cambiar (termino, fallo, avanzo de etapa) aparezca arriba en vez de
+            // quedar enterrado entre el resto por el orden del videoId.
+            enriched.sort((a, b) => b.updatedAt - a.updatedAt);
             return sendJson(res, 200, enriched);
         }
 
