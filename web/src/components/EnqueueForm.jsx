@@ -6,20 +6,7 @@ export function EnqueueForm({ onEnqueued }) {
   const [pending, setPending] = useState(false);
   const [notice, setNotice] = useState(null);
 
-  async function pasteFromClipboard() {
-    try {
-      const text = await navigator.clipboard.readText();
-      if (text) setValue(text.trim());
-    } catch {
-      // El navegador puede negar el permiso de lectura del portapapeles fuera de un gesto de
-      // usuario reciente — esto SI lo es (un click), pero por si el permiso esta bloqueado a mano.
-      setNotice('No se pudo leer el portapapeles — revisa el permiso del navegador para este sitio.');
-    }
-  }
-
-  async function submit(ev) {
-    ev.preventDefault();
-    const urls = value.split(',').map((u) => u.trim()).filter(Boolean);
+  async function enqueueUrls(urls) {
     if (urls.length === 0) return;
     setPending(true);
     setNotice(null);
@@ -39,18 +26,35 @@ export function EnqueueForm({ onEnqueued }) {
     }
   }
 
+  async function submit(ev) {
+    ev.preventDefault();
+    const urls = value.split(',').map((u) => u.trim()).filter(Boolean);
+    await enqueueUrls(urls);
+  }
+
+  // Un solo click: lee el portapapeles Y encola directamente, sin pasar por el input ni por un
+  // segundo click en "Encolar" — eso es lo que se pidio ("solo un click").
+  async function pasteAndEnqueue() {
+    let text;
+    try {
+      text = await navigator.clipboard.readText();
+    } catch {
+      // El navegador puede negar el permiso de lectura del portapapeles fuera de un gesto de
+      // usuario reciente — esto SI lo es (un click), pero por si el permiso esta bloqueado a mano.
+      setNotice('No se pudo leer el portapapeles — revisa el permiso del navegador para este sitio.');
+      return;
+    }
+    const urls = (text || '').split(',').map((u) => u.trim()).filter(Boolean);
+    if (urls.length === 0) {
+      setNotice('El portapapeles no tiene ninguna URL.');
+      return;
+    }
+    await enqueueUrls(urls);
+  }
+
   return (
     <div className="mb-8">
       <form onSubmit={submit} className="flex border border-ink bg-paper-card">
-        <button
-          type="button"
-          onClick={pasteFromClipboard}
-          title="Pegar del portapapeles"
-          aria-label="Pegar del portapapeles"
-          className="flex items-center border-r border-ink px-3 text-ink-dim hover:bg-paper hover:text-ink"
-        >
-          <Clipboard size={16} />
-        </button>
         <input
           type="text"
           value={value}
@@ -66,6 +70,17 @@ export function EnqueueForm({ onEnqueued }) {
         >
           <Send size={14} />
           {pending ? 'Encolando…' : 'Encolar'}
+        </button>
+        <button
+          type="button"
+          onClick={pasteAndEnqueue}
+          disabled={pending}
+          title="Encolar del portapapeles (un click)"
+          aria-label="Encolar del portapapeles"
+          className="flex items-center gap-2 border-l border-ink px-4 font-serif text-sm font-semibold text-ink hover:bg-paper disabled:opacity-60"
+        >
+          <Clipboard size={16} />
+          Encolar portapapeles
         </button>
       </form>
       {notice && <p className="mt-2 border-l-2 border-red pl-2 text-sm text-red">{notice}</p>}
