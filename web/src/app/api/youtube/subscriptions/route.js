@@ -45,7 +45,10 @@ async function fetchUploadsPlaylistIds(channelIds, accessToken) {
 
 async function fetchRecentUploads(playlistId, channelTitle, accessToken) {
   if (!playlistId) return [];
-  const data = await ytFetch(`/playlistItems?part=snippet&playlistId=${playlistId}&maxResults=5`, accessToken);
+  // 15, no 5: con filtros de fecha/canal y "cargar mas" en el cliente, una tanda de 5 por
+  // canal se vaciaba enseguida — el coste en cuota es el mismo (1 unidad por llamada a
+  // `list`, sin importar maxResults hasta 50), asi que subirlo no cuesta nada extra.
+  const data = await ytFetch(`/playlistItems?part=snippet&playlistId=${playlistId}&maxResults=15`, accessToken);
   return (data.items || []).map((it) => ({
     videoId: it.snippet.resourceId.videoId,
     title: it.snippet.title,

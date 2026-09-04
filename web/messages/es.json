@@ -128,8 +128,18 @@
     "refresh": "Actualizar",
     "subscriptionsIntro": "Últimos vídeos de tus canales suscritos.",
     "empty": "No se encontraron vídeos recientes en tus suscripciones.",
+    "noMatches": "Ningún vídeo coincide con los filtros.",
     "enqueue": "Encolar",
     "enqueued": "Encolado",
-    "enqueueFailed": "No se pudo encolar: {error}"
+    "enqueueFailed": "No se pudo encolar: {error}",
+    "searchPlaceholder": "Buscar por título…",
+    "allChannels": "Todos los canales",
+    "range_all": "Cualquier fecha",
+    "range_day": "Últimas 24h",
+    "range_week": "Última semana",
+    "range_month": "Último mes",
+    "hideQueued": "Ocultar ya encolados",
+    "loadMore": "Cargar más ({count})",
+    "backToList": "Volver al listado"
   }
 }

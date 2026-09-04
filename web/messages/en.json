@@ -128,8 +128,18 @@
     "refresh": "Refresh",
     "subscriptionsIntro": "Recent videos from your subscribed channels.",
     "empty": "No recent videos found in your subscriptions.",
+    "noMatches": "No videos match these filters.",
     "enqueue": "Enqueue",
     "enqueued": "Enqueued",
-    "enqueueFailed": "Couldn't enqueue: {error}"
+    "enqueueFailed": "Couldn't enqueue: {error}",
+    "searchPlaceholder": "Search by title…",
+    "allChannels": "All channels",
+    "range_all": "Any date",
+    "range_day": "Last 24h",
+    "range_week": "Last week",
+    "range_month": "Last month",
+    "hideQueued": "Hide already enqueued",
+    "loadMore": "Load more ({count})",
+    "backToList": "Back to list"
   }
 }
