@@ -927,38 +927,48 @@ export class DownloadStage extends BaseStage {
         return text.length > 50 ? text : null;
     }
 
+    /** vtt va primero, no json3: en produccion YouTube ha devuelto 429 en el endpoint de json3
+     * para un video mientras el MISMO video, mismo idioma, con vtt funcionaba sin problema
+     * (visto con VFxGYDx38OU) — parece throttling especifico de ese formato, no del video ni de
+     * la IP. En vez de apostar a un solo formato, se prueban varios en orden y solo se rinde si
+     * todos fallan; usa el mismo _parseSubtitleContent que ya sabia leer vtt/json3/raw para el
+     * fallback de mas abajo, en vez de duplicar el parseo de JSON aqui. */
     async _fetchWithYtDlp(videoId, url, langCode) {
         const tmpDir = os.tmpdir();
         const outTemplate = path.join(tmpDir, `yt-sub-${videoId}`);
 
-        const cmd = [
-            'yt-dlp',
-            '--skip-download',
-            '--write-auto-subs',
-            '--write-subs',
-            '--sub-langs', langCode,
-            '--sub-format', 'json3',
-            '--output', `"${outTemplate}"`,
-            '--quiet',
-            '--no-warnings',
-            `"${url}"`
-        ].join(' ');
+        for (const fmt of ['vtt', 'json3', 'srv1']) {
+            const filePath = `${outTemplate}.${langCode}.${fmt}`;
+            try {
+                const cmd = [
+                    'yt-dlp',
+                    '--skip-download',
+                    '--write-auto-subs',
+                    '--write-subs',
+                    '--sub-langs', langCode,
+                    '--sub-format', fmt,
+                    '--output', `"${outTemplate}"`,
+                    '--quiet',
+                    '--no-warnings',
+                    `"${url}"`
+                ].join(' ');
 
-        await execAsync(cmd);
+                await execAsync(cmd);
+                const raw = await fs.readFile(filePath, 'utf-8');
+                const text = this._parseSubtitleContent(raw, fmt);
+                if (text) {
+                    console.log(`   ✅ yt-dlp OK (${langCode}, formato ${fmt}), ${text.length} chars`);
+                    return { text, languageUsed: langCode };
+                }
+                console.warn(`   ⚠️  yt-dlp (${fmt}) devolvió un transcript vacío/corto, probando el siguiente formato...`);
+            } catch (err) {
+                console.warn(`   ⚠️  yt-dlp con formato ${fmt} falló (${err.message.split('\n')[0]}), probando el siguiente...`);
+            } finally {
+                await fs.unlink(filePath).catch(() => {});
+            }
+        }
 
-        const filePath = `${outTemplate}.${langCode}.json3`;
-        const raw = await fs.readFile(filePath, 'utf-8');
-        await fs.unlink(filePath).catch(() => {});
-
-        const json = JSON.parse(raw);
-        const text = (json.events || [])
-            .flatMap(e => (e.segs || []).map(s => s.utf8 || ''))
-            .join(' ').replace(/\n/g, ' ').replace(/\s+/g, ' ').trim();
-
-        if (text.length < 50) throw new Error("Transcript demasiado corto.");
-
-        console.log(`   ✅ yt-dlp OK (${langCode}), ${text.length} chars`);
-        return { text, languageUsed: langCode };
+        throw new Error("yt-dlp no pudo bajar el transcript en ningún formato (vtt/json3/srv1).");
     }
 
     async _fetchCaptionTracksFromHtml(videoId) {
