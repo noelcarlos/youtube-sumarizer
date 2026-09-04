@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useTranslations } from 'next-intl';
-import { Loader2, RotateCcw, Settings as SettingsIcon } from 'lucide-react';
+import { Loader2, Pause, Play, RotateCcw, Settings as SettingsIcon } from 'lucide-react';
 import { Sheet, SheetContent } from './ui/sheet.jsx';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from './ui/tabs.jsx';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select.jsx';
@@ -237,7 +237,7 @@ function LlmTab({ settings, save, t }) {
 
 function QueuesTab({ settings, save, t }) {
   const [paused, setPaused] = useState(settings.paused);
-  const [pending, setPending] = useState(null); // stage key currently toggling
+  const [pending, setPending] = useState(null); // stage key currently toggling, o 'all'
 
   async function toggle(stageKey, value) {
     setPending(stageKey);
@@ -251,9 +251,41 @@ function QueuesTab({ settings, save, t }) {
     }
   }
 
+  // Un problema de conexion o el modelo local caido afecta a TODO el pipeline, no solo a una
+  // etapa — antes hacia falta apagar los 4 switches uno a uno; esto manda un solo PATCH con las
+  // 4 etapas a la vez, para poder frenar todo de un click mientras se arregla lo que sea.
+  const allPaused = QUEUE_STAGES.every(({ key }) => paused[key]);
+
+  async function toggleAll() {
+    setPending('all');
+    try {
+      const next = !allPaused;
+      const patch = {};
+      for (const { key } of QUEUE_STAGES) patch[key] = next;
+      const view = await save({ paused: patch });
+      setPaused(view.paused);
+    } catch {
+    } finally {
+      setPending(null);
+    }
+  }
+
   return (
     <div className="flex flex-col gap-4">
       <p className="text-sm text-muted">{t('queuesIntro')}</p>
+      <button
+        onClick={toggleAll}
+        disabled={pending === 'all'}
+        className={
+          'flex items-center justify-center gap-2 rounded-xl px-4 py-2 text-sm font-medium transition-colors disabled:opacity-60 ' +
+          (allPaused
+            ? 'bg-primary text-primary-foreground hover:bg-primary-hover'
+            : 'border border-error/30 bg-error/10 text-error hover:bg-error/20')
+        }
+      >
+        {allPaused ? <Play size={14} /> : <Pause size={14} />}
+        {allPaused ? t('resumeAll') : t('pauseAll')}
+      </button>
       <div className="flex flex-col divide-y divide-border rounded-xl border border-border">
         {QUEUE_STAGES.map(({ key, labelKey }) => (
           <div key={key} className="flex items-center justify-between gap-3 px-4 py-3">
@@ -263,7 +295,7 @@ function QueuesTab({ settings, save, t }) {
             </div>
             <Switch
               checked={paused[key]}
-              disabled={pending === key}
+              disabled={pending === key || pending === 'all'}
               onCheckedChange={(value) => toggle(key, value)}
             />
           </div>

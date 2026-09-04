@@ -115,6 +115,8 @@
     "llmApiKeyHint": "The saved key can't be read back for security; it's only overwritten if you type a new one.",
     "llmNoKeyWarning": "This provider doesn't have an API key configured yet.",
     "queuesIntro": "Pausing a queue only stops it from picking up new videos — whatever that stage is already processing finishes normally. Handy for giving yourself time to switch LLMs without a video getting half-processed on the old model.",
+    "pauseAll": "Pause all queues",
+    "resumeAll": "Resume all queues",
     "queueDownload": "Download",
     "queueAiSummarize": "AI Summary",
     "queueInterpretSummary": "Interpret",

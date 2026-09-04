@@ -115,6 +115,8 @@
     "llmApiKeyHint": "No se puede leer la key ya guardada por seguridad; solo se sobrescribe si escribes una nueva.",
     "llmNoKeyWarning": "Este proveedor no tiene API key configurada todavía.",
     "queuesIntro": "Pausar una cola detiene solo la recogida de vídeos nuevos — lo que ya está procesando esa etapa termina con normalidad. Útil para dar tiempo a cambiar de LLM sin que un vídeo se quede a medias con el modelo viejo.",
+    "pauseAll": "Pausar todas las colas",
+    "resumeAll": "Reanudar todas las colas",
     "queueDownload": "Descarga",
     "queueAiSummarize": "Resumen (IA)",
     "queueInterpretSummary": "Interpretar",
