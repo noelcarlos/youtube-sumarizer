@@ -113,12 +113,19 @@ const LMSTUDIO_MODEL_NAME = process.env.LMSTUDIO_MODEL || "Qwen3.6-35B-A3B-oQ4e-
 // Exportadas para que server.js pueda montar su propio transporter y reenviar un email ya
 // generado (boton "Enviar email" del drawer) sin tener que pasar por todo EmailStage, que asume
 // que el video esta en email/input, no ya en done/.
-export const EMAIL_USER = "david.rey.1040@gmail.com";
-export const EMAIL_PASS = process.env.EMAIL_PASS;
-export const EMAIL_TO = "noel.carlos@gmail.com";
-//const EMAIL_BCC = "kl2053258@gmail.com";
-//const EMAIL_BCC = "kl2053258@gmail.com,manuelvargash95@gmail.com";
-export const EMAIL_BCC = "";
+// Objeto (no consts sueltas) para que server.js pueda mutar `to`/`bcc` en caliente desde
+// Settings sin tocar .env ni reiniciar — user/pass del remitente SI quedan fuera de esto,
+// porque son credenciales (contraseña de aplicacion de Gmail) y no algo que deba poder
+// escribirse desde la UI.
+export const EMAIL_CONFIG = {
+    user: "david.rey.1040@gmail.com",
+    pass: process.env.EMAIL_PASS,
+    to: "noel.carlos@gmail.com",
+    bcc: "",
+};
+// Alias para no romper el resto del fichero de golpe.
+export const EMAIL_USER = EMAIL_CONFIG.user;
+export const EMAIL_PASS = EMAIL_CONFIG.pass;
 const OVERRIDE_LANG = null; //"Español"; // Set to null to auto-detect
 
 // ==========================================================
@@ -300,12 +307,47 @@ function requireKey(key, provider, envVar) {
     return key;
 }
 
-export function createAiClient(provider) {
+/** Config por defecto de cada proveedor, derivada de las mismas constantes de .env que usa
+ * createAiClient — se exporta para que server.js pueda mostrarla en GET /api/settings sin
+ * duplicar aqui los valores por defecto (baseUrl, modelo, etc). Las API keys NO se incluyen. */
+export const AI_PROVIDER_DEFAULTS = {
+    gemini: { model: GEMINI_MODEL, baseUrl: null, hasKey: Boolean(GEMINI_API_KEY) },
+    deepseek: { model: DEEPSEEK_MODEL, baseUrl: DEEPSEEK_BASE_URL, hasKey: Boolean(DEEPSEEK_API_KEY) },
+    nvidia: { model: NVIDIA_MODEL, baseUrl: NVIDIA_BASE_URL, hasKey: Boolean(NVIDIA_API_KEY) },
+    lmstudio: { model: LMSTUDIO_MODEL_NAME, baseUrl: LMSTUDIO_BASE_URL, hasKey: Boolean(LMSTUDIO_API_KEY) },
+};
+
+/** `overrides` deja que Settings (server.js) reconfigure el proveedor en caliente — otro modelo,
+ * otra base URL, otra key — sin tener que tocar .env ni reiniciar el proceso. Cualquier campo
+ * ausente cae en el mismo valor de .env que ya usaba esta funcion. */
+export function createAiClient(provider, overrides = {}) {
     switch (provider) {
-        case 'gemini': return new GeminiClient(requireKey(GEMINI_API_KEY, provider, 'GEMINI_API_KEY'), GEMINI_MODEL);
-        case 'deepseek': return new OpenAICompatibleClient(requireKey(DEEPSEEK_API_KEY, provider, 'DEEPSEEK_API_KEY'), DEEPSEEK_BASE_URL, DEEPSEEK_MODEL, 10 * 60 * 1000, "DeepSeek");
-        case 'nvidia': return new OpenAICompatibleClient(requireKey(NVIDIA_API_KEY, provider, 'NVIDIA_API_KEY'), NVIDIA_BASE_URL, NVIDIA_MODEL, NVIDIA_TIMEOUT_MS, "NVIDIA");
-        case 'lmstudio': return new LMStudioClient(LMSTUDIO_API_KEY, LMSTUDIO_BASE_URL, LMSTUDIO_MODEL_NAME, LMSTUDIO_TIMEOUT_MS);
+        case 'gemini':
+            return new GeminiClient(
+                requireKey(overrides.apiKey || GEMINI_API_KEY, provider, 'GEMINI_API_KEY'),
+                overrides.model || GEMINI_MODEL,
+            );
+        case 'deepseek':
+            return new OpenAICompatibleClient(
+                requireKey(overrides.apiKey || DEEPSEEK_API_KEY, provider, 'DEEPSEEK_API_KEY'),
+                overrides.baseUrl || DEEPSEEK_BASE_URL,
+                overrides.model || DEEPSEEK_MODEL,
+                10 * 60 * 1000, "DeepSeek",
+            );
+        case 'nvidia':
+            return new OpenAICompatibleClient(
+                requireKey(overrides.apiKey || NVIDIA_API_KEY, provider, 'NVIDIA_API_KEY'),
+                overrides.baseUrl || NVIDIA_BASE_URL,
+                overrides.model || NVIDIA_MODEL,
+                NVIDIA_TIMEOUT_MS, "NVIDIA",
+            );
+        case 'lmstudio':
+            return new LMStudioClient(
+                overrides.apiKey || LMSTUDIO_API_KEY,
+                overrides.baseUrl || LMSTUDIO_BASE_URL,
+                overrides.model || LMSTUDIO_MODEL_NAME,
+                LMSTUDIO_TIMEOUT_MS,
+            );
         default: throw new Error(`Unknown provider: ${provider}. Valid: gemini, deepseek, nvidia, lmstudio`);
     }
 }
@@ -1677,8 +1719,8 @@ export class EmailStage extends BaseStage {
             // 5) Send email
             await transporter.sendMail({
                 from: EMAIL_USER,
-                to: EMAIL_TO,
-                bcc: EMAIL_BCC,
+                to: EMAIL_CONFIG.to,
+                bcc: EMAIL_CONFIG.bcc,
                 subject: `[SUMMARY] ${title}`,
                 html: finalHtml
             });
@@ -1732,8 +1774,16 @@ export function sleep(ms) {
  * `stage.execute()` already logs and moves failures to error/ for every stage; this adds one more
  * layer of protection around it because DownloadStage historically could throw past its own
  * try/catch, and one bad video must not take the whole worker down with it. */
-export async function runStageWorker(stage, { filterInput, upstreamDone, nextInputDir, filterMove, pollMs = 250 }) {
+export async function runStageWorker(stage, { filterInput, upstreamDone, nextInputDir, filterMove, pollMs = 250, isPaused }) {
     while (true) {
+        // Pausada desde Settings ("dame tiempo a configurar otro LLM"): no se toca listInputs ni
+        // execute, así que lo que ya hay en input/ se queda esperando intacto hasta reanudar —
+        // no es lo mismo que parar el proceso, el worker sigue vivo y solo deja de recoger trabajo.
+        if (isPaused && isPaused()) {
+            await sleep(pollMs);
+            continue;
+        }
+
         const files = await stage.listInputs(filterInput);
 
         for (const file of files) {

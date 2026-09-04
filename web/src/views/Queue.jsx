@@ -10,6 +10,7 @@ import { VideoCardSkeleton } from '../components/VideoCardSkeleton.jsx';
 import { ReaderDrawer } from '../components/ReaderDrawer.jsx';
 import { LanguageSwitcher } from '../components/LanguageSwitcher.jsx';
 import { ThemeToggle } from '../components/ThemeToggle.jsx';
+import { SettingsDrawer } from '../components/SettingsDrawer.jsx';
 import { matchesTab, isProcessing } from '../stages.js';
 
 export function Queue() {
@@ -33,6 +34,7 @@ export function Queue() {
             <Clock />
             <ThemeToggle />
             <LanguageSwitcher />
+            <SettingsDrawer />
           </div>
         </div>
       </header>

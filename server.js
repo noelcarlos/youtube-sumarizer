@@ -16,9 +16,9 @@ import path from 'node:path';
 import { marked } from 'marked';
 import nodemailer from 'nodemailer';
 import {
-    DIRS, initDirs, EventLogger, moveOutputs, runStageWorker, createAiClient,
+    DIRS, initDirs, EventLogger, moveOutputs, runStageWorker, createAiClient, AI_PROVIDER_DEFAULTS,
     ProcessInputsStage, DownloadStage, AiSummarizeStage, InterpretSummaryStage, EmailStage,
-    EMAIL_USER, EMAIL_PASS, EMAIL_TO, EMAIL_BCC,
+    EMAIL_CONFIG,
 } from './resumir_video.js';
 
 // 4173 es el default de iron-agile-bot (server/src/index.js) — con los dos corriendo a la vez
@@ -28,8 +28,57 @@ const PORT = Number(process.env.PORT || 4577);
 
 await initDirs();
 
-const provider = process.env.AI_PROVIDER || 'lmstudio';
-const aiClient = createAiClient(provider);
+// ==========================================================
+// SETTINGS — persistidas en disco (pipeline-data/settings.json), igual que el propio estado
+// de la cola vive en las carpetas: nada de base de datos aparte. Se cargan ANTES de crear el
+// aiClient/EMAIL_CONFIG para que un reinicio del servidor recuerde lo que se configuro desde
+// la UI, no solo lo que hay en .env.
+// ==========================================================
+
+const SETTINGS_PATH = path.join('pipeline-data', 'settings.json');
+
+const DEFAULT_SETTINGS = {
+    llm: {
+        provider: process.env.AI_PROVIDER || 'lmstudio',
+        overrides: { gemini: {}, deepseek: {}, nvidia: {}, lmstudio: {} },
+    },
+    email: { to: EMAIL_CONFIG.to, bcc: EMAIL_CONFIG.bcc },
+    // Cada etapa pausada por separado: "dame tiempo a configurar otro LLM" solo tiene sentido
+    // pausando AI_SUMMARIZE, pero se ofrecen las 4 porque la misma necesidad aplica a cualquier
+    // etapa (por ejemplo, pausar EMAIL mientras se cambia el destinatario en este mismo Settings).
+    paused: { DOWNLOAD: false, AI_SUMMARIZE: false, INTERPRET_SUMMARY: false, EMAIL: false },
+};
+
+async function loadSettings() {
+    try {
+        const parsed = JSON.parse(await fs.readFile(SETTINGS_PATH, 'utf8'));
+        return {
+            llm: {
+                provider: parsed.llm?.provider || DEFAULT_SETTINGS.llm.provider,
+                overrides: { ...DEFAULT_SETTINGS.llm.overrides, ...parsed.llm?.overrides },
+            },
+            email: { ...DEFAULT_SETTINGS.email, ...parsed.email },
+            paused: { ...DEFAULT_SETTINGS.paused, ...parsed.paused },
+        };
+    } catch {
+        return structuredClone(DEFAULT_SETTINGS);
+    }
+}
+
+const settings = await loadSettings();
+async function persistSettings() {
+    await fs.writeFile(SETTINGS_PATH, JSON.stringify(settings, null, 2));
+}
+
+// `paused` es el MISMO objeto que settings.paused (no una copia): los workers cierran sobre
+// esta referencia, asi que mutar sus propiedades desde /api/settings basta para pausarlos o
+// reanudarlos sin tener que volver a arrancar nada.
+const paused = settings.paused;
+
+EMAIL_CONFIG.to = settings.email.to;
+EMAIL_CONFIG.bcc = settings.email.bcc;
+
+let aiClient = createAiClient(settings.llm.provider, settings.llm.overrides[settings.llm.provider] || {});
 const logger = new EventLogger();
 
 const processInputsStage = new ProcessInputsStage(logger);
@@ -61,24 +110,71 @@ startForever(downloader, {
     filterInput: f => f.endsWith('.json'),
     nextInputDir: DIRS.AI_SUMMARIZE.INPUT,
     filterMove: f => f.endsWith('.json'),
+    isPaused: () => paused.DOWNLOAD,
 });
 startForever(aiSummarizer, {
     filterInput: f => f.endsWith('.json'),
     nextInputDir: DIRS.INTERPRET_SUMMARY.INPUT,
     filterMove: f => f.endsWith('.json'),
+    isPaused: () => paused.AI_SUMMARIZE,
 });
 startForever(interpretSummaryStage, {
     filterInput: f => f.endsWith('.json'),
     nextInputDir: DIRS.EMAIL.INPUT,
     filterMove: f => f.endsWith('.json') || f.endsWith('.md'),
+    isPaused: () => paused.INTERPRET_SUMMARY,
 });
 startForever(emailer, {
     filterInput: f => f.endsWith('.enriched.json'),
     nextInputDir: DIRS.DONE,
     filterMove: () => true,
+    isPaused: () => paused.EMAIL,
 });
 
 console.log('🟣 4 workers de etapa arrancados (download, ai-summarize, interpret-summary, email)');
+
+/** Vista de /api/settings: nunca devuelve una API key en crudo, solo si hay una configurada
+ * (`hasKey`) — la propia o la de .env si Settings no la ha pisado todavia. */
+function settingsView() {
+    const providers = {};
+    for (const [prov, def] of Object.entries(AI_PROVIDER_DEFAULTS)) {
+        const ov = settings.llm.overrides[prov] || {};
+        providers[prov] = {
+            model: ov.model || def.model,
+            baseUrl: ov.baseUrl ?? def.baseUrl,
+            hasKey: Boolean(ov.apiKey) || def.hasKey,
+        };
+    }
+    return {
+        llm: { provider: settings.llm.provider, providers },
+        email: settings.email,
+        paused: settings.paused,
+    };
+}
+
+/** POST /api/settings solo manda lo que cambio, no el objeto entero — por eso es un merge
+ * campo a campo y no un reemplazo. Si toca provider/overrides del LLM, reconstruye el aiClient
+ * y lo reasigna a aiSummarizer.aiClient EN CALIENTE: el worker no se reinicia, la siguiente vez
+ * que recoja un video ya usa el cliente nuevo. */
+async function applySettingsPatch(body) {
+    if (body.llm) {
+        if (body.llm.provider) settings.llm.provider = body.llm.provider;
+        if (body.llm.overrides) {
+            for (const [prov, ov] of Object.entries(body.llm.overrides)) {
+                settings.llm.overrides[prov] = { ...settings.llm.overrides[prov], ...ov };
+            }
+        }
+        aiClient = createAiClient(settings.llm.provider, settings.llm.overrides[settings.llm.provider] || {});
+        aiSummarizer.aiClient = aiClient;
+    }
+    if (body.email) Object.assign(settings.email, body.email);
+    if (body.email?.to !== undefined) EMAIL_CONFIG.to = settings.email.to;
+    if (body.email?.bcc !== undefined) EMAIL_CONFIG.bcc = settings.email.bcc;
+    if (body.paused) Object.assign(paused, body.paused);
+
+    await persistSettings();
+    return settingsView();
+}
 
 // ==========================================================
 // ESTADO DE LA COLA — se deriva en vivo de las carpetas, no de una base de datos aparte.
@@ -283,7 +379,7 @@ async function deleteVideo(videoId) {
 
 const emailTransporter = nodemailer.createTransport({
     service: 'gmail',
-    auth: { user: EMAIL_USER, pass: EMAIL_PASS },
+    auth: { user: EMAIL_CONFIG.user, pass: EMAIL_CONFIG.pass },
 });
 
 /** Botón "Enviar email" del drawer: reenvía el `.email.html` YA generado, tal cual, sin
@@ -300,9 +396,9 @@ async function resendEmail(videoId) {
     const titleMatch = html.match(/<title>([^<]*)<\/title>|<h1>([^<]*)<\/h1>/i);
     const title = titleMatch ? (titleMatch[1] || titleMatch[2]) : videoId;
     await emailTransporter.sendMail({
-        from: EMAIL_USER,
-        to: EMAIL_TO,
-        bcc: EMAIL_BCC,
+        from: EMAIL_CONFIG.user,
+        to: EMAIL_CONFIG.to,
+        bcc: EMAIL_CONFIG.bcc,
         subject: `[SUMMARY] ${title}`,
         html,
     });
@@ -311,6 +407,26 @@ async function resendEmail(videoId) {
 const server = http.createServer(async (req, res) => {
     try {
         const url = new URL(req.url, `http://localhost:${PORT}`);
+
+        if (req.method === 'GET' && url.pathname === '/api/settings') {
+            return sendJson(res, 200, settingsView());
+        }
+
+        if (req.method === 'POST' && url.pathname === '/api/settings') {
+            let body = '';
+            for await (const chunk of req) body += chunk;
+            let parsed;
+            try { parsed = JSON.parse(body || '{}'); } catch { return sendJson(res, 400, { error: 'JSON invalido' }); }
+            try {
+                const view = await applySettingsPatch(parsed);
+                return sendJson(res, 200, view);
+            } catch (err) {
+                // createAiClient lanza si el proveedor elegido no tiene API key todavia (por
+                // ejemplo, se cambio a "gemini" pero aun no se ha escrito la key) — 400, no 500,
+                // porque es un dato de entrada invalido, no un fallo del servidor.
+                return sendJson(res, 400, { error: err.message });
+            }
+        }
 
         if (req.method === 'GET' && url.pathname === '/api/state') {
             const state = await buildState();
