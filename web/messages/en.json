@@ -1,4 +1,8 @@
 {
+  "AppHeader": {
+    "navQueue": "Queue",
+    "navSubscriptions": "Subscriptions"
+  },
   "Header": {
     "processing": "processing ({count})",
     "idle": "idle",

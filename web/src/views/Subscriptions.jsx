@@ -4,75 +4,54 @@ import { useEffect, useMemo, useState } from 'react';
 import { useTranslations } from 'next-intl';
 import { useSession, signIn, signOut } from 'next-auth/react';
 import { Loader2, RotateCcw, Search, Send, X, MonitorPlay } from 'lucide-react';
-import { Sheet, SheetContent } from './ui/sheet.jsx';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select.jsx';
-import { YouTubePlayer } from './YouTubePlayer.jsx';
+import { AppHeader } from '../components/AppHeader.jsx';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select.jsx';
+import { YouTubePlayer } from '../components/YouTubePlayer.jsx';
 
 const PAGE_SIZE = 20;
 const DATE_RANGES = ['all', 'day', 'week', 'month'];
 const RANGE_MS = { day: 24 * 60 * 60 * 1000, week: 7 * 24 * 60 * 60 * 1000, month: 30 * 24 * 60 * 60 * 1000 };
 
-export function SubscriptionsDrawer() {
+/** Pagina propia, no un drawer: la version con drawer se ensanchaba a pantalla completa para
+ * caber la lista + el reproductor uno al lado del otro, y eso tapaba la cabecera entera (tema,
+ * idioma, settings) — con una pagina de verdad, la cabecera (AppHeader) se queda puesta igual
+ * que en la cola. */
+export function Subscriptions() {
   const t = useTranslations('SubscriptionsDrawer');
   const { data: session, status } = useSession();
-  const [open, setOpen] = useState(false);
   const [previewVideo, setPreviewVideo] = useState(null);
-
-  // Lista y reproductor en el mismo panel, uno al lado del otro: reproducir un video de la
-  // lista nunca la reemplaza ni la cierra, asi que pinchar en otro despues es solo cambiar
-  // que hay a la derecha, no navegar hacia atras primero. Solo hace falta el ancho completo
-  // cuando de verdad hay dos columnas que mostrar (conectado); las pantallas de conectar/cargar
-  // se ven raras estiradas a pantalla completa.
   const isReady = status === 'authenticated' && !session?.error;
 
   return (
-    <>
-      <button
-        onClick={() => setOpen(true)}
-        title={t('openTitle')}
-        aria-label={t('openTitle')}
-        className="flex flex-shrink-0 items-center justify-center rounded-full p-1.5 text-muted transition-colors hover:bg-accent hover:text-text"
-      >
-        <MonitorPlay size={16} />
-      </button>
+    <div className="flex min-h-screen w-full flex-col bg-bg">
+      <AppHeader />
 
-      <Sheet open={open} onOpenChange={(v) => { setOpen(v); if (!v) setPreviewVideo(null); }}>
-        <SheetContent
-          side="right"
-          className={`flex flex-col gap-0 p-0 ${isReady ? 'w-full sm:max-w-none sm:w-screen' : 'w-full sm:max-w-none sm:w-[480px]'}`}
-        >
-          <div className="flex items-center justify-between border-b border-border px-6 py-4">
-            <h2 className="text-lg font-semibold tracking-tight text-text">{t('title')}</h2>
-          </div>
+      {status === 'loading' && (
+        <div className="flex flex-1 items-center justify-center text-muted">
+          <Loader2 size={18} className="mr-2 animate-spin" /> {t('loading')}
+        </div>
+      )}
 
-          {status === 'loading' && (
-            <div className="flex flex-1 items-center justify-center text-muted">
-              <Loader2 size={18} className="mr-2 animate-spin" /> {t('loading')}
-            </div>
-          )}
+      {status !== 'loading' && !isReady && (
+        <div className="flex flex-1 flex-col items-center justify-center gap-3 p-6 text-center">
+          <MonitorPlay size={32} className="text-muted" />
+          <p className="text-sm text-muted">{session?.error ? t('reauthNeeded') : t('connectIntro')}</p>
+          <button
+            onClick={() => signIn('google')}
+            className="rounded-xl bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary-hover"
+          >
+            {t('connect')}
+          </button>
+        </div>
+      )}
 
-          {status !== 'loading' && !isReady && (
-            <div className="flex flex-1 flex-col items-center justify-center gap-3 p-6 text-center">
-              <MonitorPlay size={32} className="text-muted" />
-              <p className="text-sm text-muted">{session?.error ? t('reauthNeeded') : t('connectIntro')}</p>
-              <button
-                onClick={() => signIn('google')}
-                className="rounded-xl bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary-hover"
-              >
-                {t('connect')}
-              </button>
-            </div>
-          )}
-
-          {isReady && (
-            <div className="flex flex-1 overflow-hidden">
-              <VideoList t={t} selectedId={previewVideo?.videoId} onSelect={setPreviewVideo} />
-              <PlayerPanel video={previewVideo} onClose={() => setPreviewVideo(null)} t={t} />
-            </div>
-          )}
-        </SheetContent>
-      </Sheet>
-    </>
+      {isReady && (
+        <div className="flex flex-1 overflow-hidden">
+          <VideoList t={t} selectedId={previewVideo?.videoId} onSelect={setPreviewVideo} />
+          <PlayerPanel video={previewVideo} onClose={() => setPreviewVideo(null)} t={t} />
+        </div>
+      )}
+    </div>
   );
 }
 

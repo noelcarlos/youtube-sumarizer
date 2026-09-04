@@ -1,4 +1,8 @@
 {
+  "AppHeader": {
+    "navQueue": "Cola",
+    "navSubscriptions": "Suscripciones"
+  },
   "Header": {
     "processing": "procesando ({count})",
     "idle": "inactivo",

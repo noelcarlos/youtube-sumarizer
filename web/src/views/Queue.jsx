@@ -1,17 +1,14 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { useLocale, useTranslations } from 'next-intl';
+import { useState } from 'react';
+import { useTranslations } from 'next-intl';
 import { useQueueState } from '../hooks/useQueueState.js';
 import { EnqueueForm } from '../components/EnqueueForm.jsx';
 import { StageTabs } from '../components/StageTabs.jsx';
 import { VideoCard } from '../components/VideoCard.jsx';
 import { VideoCardSkeleton } from '../components/VideoCardSkeleton.jsx';
 import { ReaderDrawer } from '../components/ReaderDrawer.jsx';
-import { LanguageSwitcher } from '../components/LanguageSwitcher.jsx';
-import { ThemeToggle } from '../components/ThemeToggle.jsx';
-import { SettingsDrawer } from '../components/SettingsDrawer.jsx';
-import { SubscriptionsDrawer } from '../components/SubscriptionsDrawer.jsx';
+import { AppHeader } from '../components/AppHeader.jsx';
 import { matchesTab, isProcessing } from '../stages.js';
 
 export function Queue() {
@@ -24,22 +21,7 @@ export function Queue() {
 
   return (
     <div className="min-h-screen w-full bg-bg">
-      <header className="sticky top-0 z-10 w-full border-b border-border bg-card/80 backdrop-blur-sm">
-        <div className="flex w-full items-center justify-between gap-3 px-4 py-3 sm:px-6">
-          <div className="flex min-w-0 items-center gap-2 sm:gap-3">
-            <h1 className="truncate text-base font-bold tracking-tight text-text lowercase">youtube-sumarizer</h1>
-            <StatusBadge activeCount={activeCount} />
-          </div>
-          <Stepper />
-          <div className="flex flex-shrink-0 items-center gap-2 sm:gap-3">
-            <Clock />
-            <ThemeToggle />
-            <LanguageSwitcher />
-            <SubscriptionsDrawer />
-            <SettingsDrawer />
-          </div>
-        </div>
-      </header>
+      <AppHeader center={<><StatusBadge activeCount={activeCount} /><Stepper /></>} />
 
       {/* w-full max-w-none a proposito: nada de contenedor centrado con margenes muertos a los
           lados en pantallas anchas — el espacio extra lo absorbe la grid de tarjetas de mas
@@ -109,14 +91,4 @@ function StatusBadge({ activeCount }) {
       {active ? t('processing', { count: activeCount }) : t('idle')}
     </span>
   );
-}
-
-function Clock() {
-  const locale = useLocale();
-  const [now, setNow] = useState(() => new Date());
-  useEffect(() => {
-    const t = setInterval(() => setNow(new Date()), 1000);
-    return () => clearInterval(t);
-  }, []);
-  return <span className="hidden flex-shrink-0 font-mono text-xs text-muted sm:inline">{now.toLocaleTimeString(locale)}</span>;
 }
