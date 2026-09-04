@@ -353,30 +353,26 @@ export function createAiClient(provider, overrides = {}) {
 }
 
 /** El catalogo de NVIDIA lista 81 modelos, pero la cuenta de esta API key solo tiene acceso
- * real a un puñado — el resto responde 404 "Function not found for account" (no es que esten
- * caidos, es que no estan habilitados para esta cuenta) o directamente no son modelos de chat
- * (embeddings, traduccion, vision-only, content-safety). Se probaron los 81 el 2026-09-04
- * mandando "crea un hello world en Java" con timeout de 3 min cada uno; esta es la lista de los
- * que SI contestaron algo. Si NVIDIA habilita mas adelante otros modelos para esta cuenta, hay
- * que volver a correr esa prueba y actualizar esta lista a mano — no hay forma de saber desde
- * la API cuales estan habilitados sin probarlos uno a uno. */
+ * real a 16 — el resto responde 404 "Function not found for account" (no es que esten caidos,
+ * es que no estan habilitados para esta cuenta). Se probaron los 81 el 2026-09-04 mandando
+ * "crea un hello world en Java" con timeout de 3 min cada uno; de esos 16 que SI contestaron
+ * algo, esta lista se recorto a mano a los que sirven para esta tarea (resumir/reescribir texto
+ * en prosa) — fuera quedaron los de traduccion (riva-translate), moderacion/content-safety
+ * (nemoguard, safety-guard), calculo cientifico (ising-calibration) y generacion de imagenes
+ * (diffusiongemma): ninguno de esos escribe un resumen aunque respondan bien a cualquier prompt.
+ * `nemotron-3.5-lightning` se queda aunque ahora mismo de timeout/504 (ver conversacion) — es el
+ * modelo principal del proyecto, un fallo puntual de NVIDIA no significa que haya que sacarlo. Si
+ * NVIDIA habilita mas modelos para esta cuenta mas adelante, hay que volver a probar y revisar
+ * esta lista a mano — no hay forma de saber desde la API cuales sirven sin probarlos. */
 const NVIDIA_WORKING_MODELS = new Set([
-    'google/diffusiongemma-26b-a4b-it',
     'meta/llama-3.2-11b-vision-instruct',
     'minimaxai/minimax-m3',
     'moonshotai/kimi-k3',
-    'nvidia/ising-calibration-1.5-31b',
-    'nvidia/llama-3.1-nemoguard-8b-content-safety',
-    'nvidia/llama-3.1-nemotron-safety-guard-8b-v3',
     'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning',
     'nvidia/nemotron-3-super-120b-a12b',
     'nvidia/nemotron-3-ultra-550b-a55b',
-    'nvidia/nemotron-3.5-content-safety',
     'nvidia/nemotron-3.5-lightning-30b-a3b',
-    'nvidia/riva-translate-4b-instruct-v1.1',
-    'nvidia/riva-translate-4b-instruct-v2',
     'openai/gpt-oss-20b',
-    'poolside/laguna-xs-2.1',
 ]);
 
 /** Lista real de modelos que ofrece CADA proveedor, para el combo de Settings — nada
