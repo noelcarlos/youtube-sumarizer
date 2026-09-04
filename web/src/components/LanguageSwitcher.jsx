@@ -21,14 +21,14 @@ export function LanguageSwitcher() {
   }
 
   return (
-    <div className="flex flex-shrink-0 items-center gap-0.5 rounded-full border border-border bg-zinc-50 p-0.5 font-mono text-xs">
+    <div className="flex flex-shrink-0 items-center gap-0.5 rounded-full border border-border bg-secondary p-0.5 font-mono text-xs">
       {LOCALES.map(({ code, label }) => (
         <button
           key={code}
           onClick={() => setLocale(code)}
           className={
             'rounded-full px-2 py-0.5 transition-colors ' +
-            (locale === code ? 'bg-primary text-white' : 'text-muted hover:text-text')
+            (locale === code ? 'bg-primary text-primary-foreground' : 'text-muted hover:text-text')
           }
         >
           {label}

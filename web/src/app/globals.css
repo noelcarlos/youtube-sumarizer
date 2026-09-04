@@ -1,5 +1,13 @@
 @import "tailwindcss";
 
+/* Dark mode por clase (".dark" en <html>, la pone next-themes), no por prefers-color-scheme —
+ * Tailwind v4 usa la media query por defecto; esta variante hace que cualquier ancestro con la
+ * clase "dark" (o el propio elemento) active los `dark:` que sí se usan explicitamente mas
+ * abajo (shadows). La mayor parte del tema NO necesita `dark:` en absoluto: los tokens de abajo
+ * se redefinen dentro de .dark, y como cada utilidad (bg-bg, text-text, bg-primary...) ya
+ * referencia esa variable, cambian solas sin tocar ni un className. */
+@custom-variant dark (&:where(.dark, .dark *));
+
 @theme {
   --font-sans: var(--font-inter), -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
   --font-mono: var(--font-jetbrains-mono), ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
@@ -11,6 +19,7 @@
   --color-text: #18181b;
   --color-muted: #71717a;
   --color-primary: #09090b;
+  --color-primary-hover: #27272a;
 
   --color-error: #ef4444;
   --color-error-bg: #fef2f2;
@@ -41,6 +50,36 @@
   --color-input: var(--color-border);
   --color-ring: #a1a1aa;
   --radius: 0.75rem;
+}
+
+/* Mismos nombres de variable, valores distintos — no un simple invert(), cada uno elegido para
+ * que siga funcionando como el mismo PAPEL (fondo/texto/borde) en dark, no solo un color opuesto:
+ * el primario se invierte a claro-sobre-oscuro (si se dejara casi-negro sobre un fondo ya casi
+ * negro, el boton "Encolar" desaparecería); los "-bg" de estado pasan de tinte pastel a tinte muy
+ * oscuro semi-transparente, porque un pastel claro sobre fondo negro se ve como un parche que no
+ * pertenece al resto de la interfaz. */
+.dark {
+  --color-bg: #09090b;
+  --color-card: #18181b;
+  --color-border: #27272a;
+  --color-border-hover: #3f3f46;
+  --color-text: #fafafa;
+  --color-muted: #a1a1aa;
+  --color-primary: #fafafa;
+  --color-primary-hover: #e4e4e7;
+  --color-primary-foreground: #09090b;
+
+  --color-error: #f87171;
+  --color-error-bg: rgba(239, 68, 68, 0.12);
+  --color-success: #4ade80;
+  --color-success-bg: rgba(34, 197, 94, 0.12);
+  --color-warn: #fbbf24;
+  --color-warn-bg: rgba(245, 158, 11, 0.12);
+
+  --color-secondary: #27272a;
+  --color-accent: #27272a;
+  --color-destructive-foreground: #09090b;
+  --color-ring: #52525b;
 }
 
 body {

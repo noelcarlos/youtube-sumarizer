@@ -74,7 +74,7 @@ export function EnqueueForm({ onEnqueued }) {
           <button
             type="submit"
             disabled={pending}
-            className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-primary px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-zinc-800 disabled:opacity-60 sm:flex-none"
+            className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary-hover disabled:opacity-60 sm:flex-none"
           >
             <Send size={14} />
             {pending ? t('enqueuing') : t('enqueue')}
@@ -85,7 +85,7 @@ export function EnqueueForm({ onEnqueued }) {
             disabled={pending}
             title={t('pasteTitle')}
             aria-label={t('pasteFull')}
-            className="flex flex-1 items-center justify-center gap-2 rounded-xl px-3.5 py-2 text-sm font-medium text-muted transition-colors hover:bg-zinc-100 hover:text-text disabled:opacity-60 sm:flex-none"
+            className="flex flex-1 items-center justify-center gap-2 rounded-xl px-3.5 py-2 text-sm font-medium text-muted transition-colors hover:bg-accent hover:text-text disabled:opacity-60 sm:flex-none"
           >
             <Clipboard size={16} />
             <span className="hidden sm:inline">{t('pasteFull')}</span>

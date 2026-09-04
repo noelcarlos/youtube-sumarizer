@@ -73,5 +73,11 @@
   },
   "LanguageSwitcher": {
     "label": "Idioma"
+  },
+  "ThemeToggle": {
+    "light": "Claro",
+    "dark": "Oscuro",
+    "system": "Automático",
+    "switchTo": "Cambiar a modo {mode}"
   }
 }

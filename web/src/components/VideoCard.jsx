@@ -9,7 +9,7 @@ const STATION_COLOR = {
   done: 'bg-success',
   active: 'bg-warn',
   errored: 'bg-error',
-  pending: 'bg-zinc-200',
+  pending: 'bg-secondary',
 };
 
 function canOpenReader(v) {
@@ -21,7 +21,7 @@ function StatusDot({ video, processing }) {
   const color = video.bucket === 'error' ? 'bg-error'
     : video.stage === 'DONE' ? 'bg-success'
     : processing ? 'bg-warn'
-    : 'bg-zinc-300';
+    : 'bg-muted';
   return <span className={`inline-block h-1.5 w-1.5 rounded-full ${color}`} />;
 }
 

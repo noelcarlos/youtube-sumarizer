@@ -9,6 +9,7 @@ import { VideoCard } from '../components/VideoCard.jsx';
 import { VideoCardSkeleton } from '../components/VideoCardSkeleton.jsx';
 import { ReaderDrawer } from '../components/ReaderDrawer.jsx';
 import { LanguageSwitcher } from '../components/LanguageSwitcher.jsx';
+import { ThemeToggle } from '../components/ThemeToggle.jsx';
 import { matchesTab, isProcessing } from '../stages.js';
 
 export function Queue() {
@@ -21,7 +22,7 @@ export function Queue() {
 
   return (
     <div className="min-h-screen w-full bg-bg">
-      <header className="sticky top-0 z-10 w-full border-b border-border bg-white/80 backdrop-blur-sm">
+      <header className="sticky top-0 z-10 w-full border-b border-border bg-card/80 backdrop-blur-sm">
         <div className="flex w-full items-center justify-between gap-3 px-4 py-3 sm:px-6">
           <div className="flex min-w-0 items-center gap-2 sm:gap-3">
             <h1 className="truncate text-base font-bold tracking-tight text-text lowercase">youtube-sumarizer</h1>
@@ -30,6 +31,7 @@ export function Queue() {
           <Stepper />
           <div className="flex flex-shrink-0 items-center gap-2 sm:gap-3">
             <Clock />
+            <ThemeToggle />
             <LanguageSwitcher />
           </div>
         </div>
@@ -80,7 +82,7 @@ function Stepper() {
       {steps.map((step, i) => (
         <span key={step} className="flex items-center gap-1.5">
           {step}
-          {i < steps.length - 1 && <span className="text-zinc-300">→</span>}
+          {i < steps.length - 1 && <span className="text-border-hover">→</span>}
         </span>
       ))}
     </div>
@@ -94,11 +96,11 @@ function StatusBadge({ activeCount }) {
     <span
       className={
         'flex flex-shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full border px-2.5 py-1 font-mono text-xs font-medium ' +
-        (active ? 'border-warn/30 bg-warn-bg text-warn' : 'border-border bg-zinc-50 text-muted')
+        (active ? 'border-warn/30 bg-warn-bg text-warn' : 'border-border bg-secondary text-muted')
       }
     >
       <span className={'relative flex h-2 w-2 items-center justify-center'}>
-        <span className={'absolute h-2 w-2 animate-pulse rounded-full ' + (active ? 'bg-warn' : 'bg-zinc-400')} />
+        <span className={'absolute h-2 w-2 animate-pulse rounded-full ' + (active ? 'bg-warn' : 'bg-muted')} />
       </span>
       {active ? t('processing', { count: activeCount }) : t('idle')}
     </span>

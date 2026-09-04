@@ -102,7 +102,7 @@ function DrawerTabs({ data, t }) {
     // "email" primero y por defecto: es la vista que mejor queda (el diseño 2026 que se hizo
     // para la plantilla de email), asi que es lo primero que se ve al abrir el drawer.
     <Tabs defaultValue="email" className="flex flex-1 flex-col overflow-hidden">
-      <TabsList className="mx-6 mt-3 w-fit bg-zinc-100 text-muted">
+      <TabsList className="mx-6 mt-3 w-fit bg-secondary text-muted">
         <TabsTrigger value="email">{t('tabEmail')}</TabsTrigger>
         <TabsTrigger value="resumen">{t('tabSummary')}</TabsTrigger>
         <TabsTrigger value="md">{t('tabMarkdown')}</TabsTrigger>
@@ -202,7 +202,7 @@ function ActionBar({ videoId, data, t }) {
         <button
           onClick={sendEmail}
           disabled={sending}
-          className="flex items-center gap-1.5 rounded-xl bg-primary px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-zinc-800 disabled:opacity-60"
+          className="flex items-center gap-1.5 rounded-xl bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary-hover disabled:opacity-60"
         >
           <Send size={14} /> {sending ? t('sending') : t('sendEmail')}
         </button>

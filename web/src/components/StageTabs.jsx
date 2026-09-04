@@ -26,11 +26,11 @@ export function StageTabs({ videos, active, onChange }) {
             onClick={() => onChange(tabKey)}
             className={
               'flex items-center gap-1.5 rounded-full px-3.5 py-1.5 text-sm font-medium transition-colors ' +
-              (isActive ? 'bg-primary text-white' : 'text-muted hover:bg-zinc-100 hover:text-text')
+              (isActive ? 'bg-primary text-primary-foreground' : 'text-muted hover:bg-accent hover:text-text')
             }
           >
             {t(TAB_MESSAGE_KEY[tabKey])}
-            <span className="font-mono text-xs text-zinc-400">{count}</span>
+            <span className="font-mono text-xs text-muted">{count}</span>
           </button>
         );
       })}
