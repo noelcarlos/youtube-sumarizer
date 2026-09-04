@@ -1,10 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
 
 /** Sondea /api/state cada `intervalMs`. El estado real vive en las carpetas del pipeline
- * (server.js lo deriva en vivo); este hook solo lo refleja, no inventa nada. */
+ * (server.js lo deriva en vivo); este hook solo lo refleja, no inventa nada.
+ *
+ * `loading` es solo true antes del PRIMER fetch que resuelve — no se vuelve a poner a true en
+ * los sondeos siguientes, para que la lista no parpadee a un skeleton cada 1.5s. */
 export function useQueueState(intervalMs = 1500) {
   const [videos, setVideos] = useState([]);
   const [error, setError] = useState(null);
+  const [loading, setLoading] = useState(true);
   const timer = useRef(null);
 
   useEffect(() => {
@@ -21,6 +25,8 @@ export function useQueueState(intervalMs = 1500) {
         }
       } catch (err) {
         if (!cancelled) setError(err.message);
+      } finally {
+        if (!cancelled) setLoading(false);
       }
     }
 
@@ -32,5 +38,5 @@ export function useQueueState(intervalMs = 1500) {
     };
   }, [intervalMs]);
 
-  return { videos, error };
+  return { videos, error, loading };
 }

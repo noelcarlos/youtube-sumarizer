@@ -54,36 +54,44 @@ export function EnqueueForm({ onEnqueued }) {
 
   return (
     <div className="mb-8">
-      <form onSubmit={submit} className="flex border border-ink bg-paper-card">
+      <form
+        onSubmit={submit}
+        className="flex flex-col gap-1.5 rounded-2xl border border-border bg-card p-1.5 shadow-[var(--shadow-soft)] transition-shadow focus-within:shadow-[var(--shadow-hover)] sm:flex-row sm:items-center"
+      >
         <input
           type="text"
           value={value}
           onChange={(e) => setValue(e.target.value)}
           placeholder="pega una URL de YouTube (o varias separadas por coma)"
           autoComplete="off"
-          className="flex-1 bg-transparent px-3 py-3 font-mono text-sm text-ink placeholder:text-ink-dim focus:outline-none focus:bg-white"
+          className="min-w-0 flex-1 bg-transparent px-3 py-2 text-sm text-text placeholder:text-muted focus:outline-none"
         />
-        <button
-          type="submit"
-          disabled={pending}
-          className="flex items-center gap-2 border-l border-ink bg-red px-5 font-serif text-sm font-semibold text-[#fff5ee] hover:bg-red-dark disabled:opacity-60"
-        >
-          <Send size={14} />
-          {pending ? 'Encolando…' : 'Encolar'}
-        </button>
-        <button
-          type="button"
-          onClick={pasteAndEnqueue}
-          disabled={pending}
-          title="Encolar del portapapeles (un click)"
-          aria-label="Encolar del portapapeles"
-          className="flex items-center gap-2 border-l border-ink px-4 font-serif text-sm font-semibold text-ink hover:bg-paper disabled:opacity-60"
-        >
-          <Clipboard size={16} />
-          Encolar portapapeles
-        </button>
+        <div className="flex gap-1.5">
+          <button
+            type="submit"
+            disabled={pending}
+            className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-primary px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-zinc-800 disabled:opacity-60 sm:flex-none"
+          >
+            <Send size={14} />
+            {pending ? 'Encolando…' : 'Encolar'}
+          </button>
+          <button
+            type="button"
+            onClick={pasteAndEnqueue}
+            disabled={pending}
+            title="Encolar del portapapeles (un click)"
+            aria-label="Encolar del portapapeles"
+            className="flex flex-1 items-center justify-center gap-2 rounded-xl px-3.5 py-2 text-sm font-medium text-muted transition-colors hover:bg-zinc-100 hover:text-text disabled:opacity-60 sm:flex-none"
+          >
+            <Clipboard size={16} />
+            <span className="hidden sm:inline">Encolar portapapeles</span>
+            <span className="sm:hidden">Portapapeles</span>
+          </button>
+        </div>
       </form>
-      {notice && <p className="mt-2 border-l-2 border-red pl-2 text-sm text-red">{notice}</p>}
+      {notice && (
+        <p className="mt-2 rounded-lg border border-error/20 bg-error-bg px-2.5 py-1.5 text-sm text-error">{notice}</p>
+      )}
     </div>
   );
 }

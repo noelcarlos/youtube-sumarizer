@@ -193,19 +193,46 @@ function sendJson(res, status, body) {
     res.end(payload);
 }
 
-function readerPage(title, bodyHtml) {
+/** Mismo sistema de diseño 2026 que la plantilla de email (ver EmailStage en resumir_video.js) —
+ * se pidio unificar el .md y el email en un solo look, asi que comparten paleta y tipografia:
+ * Inter para texto, JetBrains Mono para el link/metadata, H1 30px/bold, H2 20px/semibold, p con
+ * line-height 28px en zinc-700. Sin boton rojo: el enlace a YouTube es un link mono sutil arriba. */
+function readerPage(videoId, bodyHtml, videoUrl) {
     return `<!DOCTYPE html>
 <html lang="es">
 <head>
 <meta charset="utf-8" />
-<title>${title}</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>${videoId}</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
-  body { font-family: -apple-system, system-ui, sans-serif; max-width: 720px; margin: 40px auto; padding: 0 20px; line-height: 1.6; color: #1a1a1a; }
-  h1, h2, h3 { line-height: 1.3; }
-  a { color: #cc0000; }
+  body {
+    margin: 0; padding: 48px 20px; background: #FAFAFA;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+    color: #3F3F46;
+  }
+  .page { max-width: 680px; margin: 0 auto; }
+  .mono { font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  .yt-link { display: inline-block; margin-bottom: 20px; font-size: 13px; color: #71717A; text-decoration: none; }
+  .yt-link:hover { color: #18181B; }
+  h1 { font-size: 30px; font-weight: 700; letter-spacing: -0.01em; color: #18181B; margin: 0 0 8px; }
+  h2 { font-size: 20px; font-weight: 600; color: #18181B; margin: 32px 0 12px; }
+  p { font-size: 16px; line-height: 28px; color: #3F3F46; margin: 0 0 16px; }
+  ul, ol { padding-left: 22px; margin: 0 0 16px; }
+  li { font-size: 16px; line-height: 28px; color: #3F3F46; margin-bottom: 4px; }
+  a { color: #18181B; }
+  strong { color: #18181B; font-weight: 600; }
+  img { display: block; max-width: 100%; border: 1px solid #E4E4E7; border-radius: 12px; padding: 8px; background: #FFFFFF; margin: 8px 0 16px; }
+  @media (max-width: 480px) { body { padding: 24px 16px; } h1 { font-size: 24px; } }
 </style>
 </head>
-<body>${bodyHtml}</body>
+<body>
+  <div class="page">
+    <a class="yt-link mono" href="${videoUrl}">Ver en YouTube →</a>
+    ${bodyHtml}
+  </div>
+</body>
 </html>`;
 }
 
@@ -323,7 +350,7 @@ const server = http.createServer(async (req, res) => {
                 ]);
                 if (md === null) { res.writeHead(404).end('summary.md no encontrado todavia'); return; }
                 res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-                res.end(readerPage(videoId, marked(md)));
+                res.end(readerPage(videoId, marked(md), `https://www.youtube.com/watch?v=${videoId}`));
                 return;
             }
 
