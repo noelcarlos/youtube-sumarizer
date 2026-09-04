@@ -140,6 +140,7 @@
     "range_month": "Último mes",
     "hideQueued": "Ocultar ya encolados",
     "loadMore": "Cargar más ({count})",
-    "backToList": "Volver al listado"
+    "selectToPlay": "Selecciona un vídeo de la lista para reproducirlo aquí.",
+    "closePreview": "Cerrar reproductor"
   }
 }

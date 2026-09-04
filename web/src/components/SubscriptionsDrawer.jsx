@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useTranslations } from 'next-intl';
 import { useSession, signIn, signOut } from 'next-auth/react';
-import { ArrowLeft, Loader2, RotateCcw, Search, Send, MonitorPlay } from 'lucide-react';
+import { Loader2, RotateCcw, Search, Send, X, MonitorPlay } from 'lucide-react';
 import { Sheet, SheetContent } from './ui/sheet.jsx';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select.jsx';
 import { YouTubePlayer } from './YouTubePlayer.jsx';
@@ -14,8 +14,16 @@ const RANGE_MS = { day: 24 * 60 * 60 * 1000, week: 7 * 24 * 60 * 60 * 1000, mont
 
 export function SubscriptionsDrawer() {
   const t = useTranslations('SubscriptionsDrawer');
+  const { data: session, status } = useSession();
   const [open, setOpen] = useState(false);
   const [previewVideo, setPreviewVideo] = useState(null);
+
+  // Lista y reproductor en el mismo panel, uno al lado del otro: reproducir un video de la
+  // lista nunca la reemplaza ni la cierra, asi que pinchar en otro despues es solo cambiar
+  // que hay a la derecha, no navegar hacia atras primero. Solo hace falta el ancho completo
+  // cuando de verdad hay dos columnas que mostrar (conectado); las pantallas de conectar/cargar
+  // se ven raras estiradas a pantalla completa.
+  const isReady = status === 'authenticated' && !session?.error;
 
   return (
     <>
@@ -31,26 +39,36 @@ export function SubscriptionsDrawer() {
       <Sheet open={open} onOpenChange={(v) => { setOpen(v); if (!v) setPreviewVideo(null); }}>
         <SheetContent
           side="right"
-          className={`flex flex-col gap-0 p-0 ${previewVideo ? 'w-full sm:max-w-none sm:w-screen' : 'w-full sm:max-w-none sm:w-[480px]'}`}
+          className={`flex flex-col gap-0 p-0 ${isReady ? 'w-full sm:max-w-none sm:w-screen' : 'w-full sm:max-w-none sm:w-[480px]'}`}
         >
-          <div className="flex items-center gap-3 border-b border-border px-6 py-4">
-            {previewVideo && (
-              <button
-                onClick={() => setPreviewVideo(null)}
-                aria-label={t('backToList')}
-                className="flex-shrink-0 rounded-lg p-1 text-muted transition-colors hover:bg-accent hover:text-text"
-              >
-                <ArrowLeft size={18} />
-              </button>
-            )}
-            <h2 className="truncate text-lg font-semibold tracking-tight text-text">
-              {previewVideo ? previewVideo.title : t('title')}
-            </h2>
+          <div className="flex items-center justify-between border-b border-border px-6 py-4">
+            <h2 className="text-lg font-semibold tracking-tight text-text">{t('title')}</h2>
           </div>
-          {previewVideo ? (
-            <VideoPreview video={previewVideo} t={t} />
-          ) : (
-            <SubscriptionsBody t={t} onPreview={setPreviewVideo} />
+
+          {status === 'loading' && (
+            <div className="flex flex-1 items-center justify-center text-muted">
+              <Loader2 size={18} className="mr-2 animate-spin" /> {t('loading')}
+            </div>
+          )}
+
+          {status !== 'loading' && !isReady && (
+            <div className="flex flex-1 flex-col items-center justify-center gap-3 p-6 text-center">
+              <MonitorPlay size={32} className="text-muted" />
+              <p className="text-sm text-muted">{session?.error ? t('reauthNeeded') : t('connectIntro')}</p>
+              <button
+                onClick={() => signIn('google')}
+                className="rounded-xl bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary-hover"
+              >
+                {t('connect')}
+              </button>
+            </div>
+          )}
+
+          {isReady && (
+            <div className="flex flex-1 overflow-hidden">
+              <VideoList t={t} selectedId={previewVideo?.videoId} onSelect={setPreviewVideo} />
+              <PlayerPanel video={previewVideo} onClose={() => setPreviewVideo(null)} t={t} />
+            </div>
           )}
         </SheetContent>
       </Sheet>
@@ -58,9 +76,12 @@ export function SubscriptionsDrawer() {
   );
 }
 
-function VideoPreview({ video, t }) {
+function PlayerPanel({ video, onClose, t }) {
   const [enqueued, setEnqueued] = useState(false);
   const [error, setError] = useState(null);
+
+  // El video cambia -> el estado de "ya encolado desde aqui" es de ESTE video, no del anterior.
+  useEffect(() => { setEnqueued(false); setError(null); }, [video?.videoId]);
 
   async function enqueue() {
     try {
@@ -76,55 +97,47 @@ function VideoPreview({ video, t }) {
     }
   }
 
+  if (!video) {
+    return (
+      <div className="hidden flex-1 flex-col items-center justify-center gap-2 border-l border-border p-6 text-center sm:flex">
+        <MonitorPlay size={32} className="text-muted" />
+        <p className="text-sm text-muted">{t('selectToPlay')}</p>
+      </div>
+    );
+  }
+
   return (
-    <div className="flex flex-1 flex-col overflow-y-auto p-6">
+    <div className="hidden flex-1 flex-col overflow-y-auto border-l border-border p-6 sm:flex">
+      <div className="mb-3 flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="truncate text-base font-semibold text-text">{video.title}</p>
+          <p className="mt-0.5 truncate text-sm text-muted">{video.channelTitle}</p>
+        </div>
+        <button
+          onClick={onClose}
+          aria-label={t('closePreview')}
+          className="flex-shrink-0 rounded-lg p-1.5 text-muted transition-colors hover:bg-accent hover:text-text"
+        >
+          <X size={16} />
+        </button>
+      </div>
       <YouTubePlayer videoId={video.videoId} />
-      <div className="mt-4 flex items-center justify-between gap-4">
-        <p className="text-sm text-muted">{video.channelTitle}</p>
+      <div className="mt-4">
         <button
           onClick={enqueue}
           disabled={enqueued}
-          className="flex flex-shrink-0 items-center gap-2 rounded-xl bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary-hover disabled:opacity-60"
+          className="flex items-center gap-2 rounded-xl bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary-hover disabled:opacity-60"
         >
           <Send size={14} />
           {enqueued ? t('enqueued') : t('enqueue')}
         </button>
+        {error && <p className="mt-2 text-sm text-error">{error}</p>}
       </div>
-      {error && <p className="mt-2 text-sm text-error">{error}</p>}
     </div>
   );
 }
 
-function SubscriptionsBody({ t, onPreview }) {
-  const { data: session, status } = useSession();
-
-  if (status === 'loading') {
-    return (
-      <div className="flex flex-1 items-center justify-center text-muted">
-        <Loader2 size={18} className="mr-2 animate-spin" /> {t('loading')}
-      </div>
-    );
-  }
-
-  if (status !== 'authenticated' || session?.error) {
-    return (
-      <div className="flex flex-1 flex-col items-center justify-center gap-3 p-6 text-center">
-        <MonitorPlay size={32} className="text-muted" />
-        <p className="text-sm text-muted">{session?.error ? t('reauthNeeded') : t('connectIntro')}</p>
-        <button
-          onClick={() => signIn('google')}
-          className="rounded-xl bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary-hover"
-        >
-          {t('connect')}
-        </button>
-      </div>
-    );
-  }
-
-  return <VideoList t={t} onPreview={onPreview} />;
-}
-
-function VideoList({ t, onPreview }) {
+function VideoList({ t, selectedId, onSelect }) {
   const [videos, setVideos] = useState(null);
   const [queuedIds, setQueuedIds] = useState(() => new Set());
   const [error, setError] = useState(null);
@@ -198,7 +211,7 @@ function VideoList({ t, onPreview }) {
   const visible = filtered.slice(0, visibleCount);
 
   return (
-    <div className="flex flex-1 flex-col overflow-hidden">
+    <div className="flex w-full flex-shrink-0 flex-col overflow-hidden sm:w-[420px]">
       <div className="flex items-center justify-between gap-3 border-b border-border px-6 py-3">
         <p className="text-xs text-muted">{t('subscriptionsIntro')}</p>
         <button
@@ -276,8 +289,11 @@ function VideoList({ t, onPreview }) {
       {!loading && visible.length > 0 && (
         <div className="flex-1 divide-y divide-border overflow-y-auto">
           {visible.map((v) => (
-            <div key={v.videoId} className="flex gap-3 px-6 py-3">
-              <button onClick={() => onPreview(v)} className="flex-shrink-0 rounded-lg transition-opacity hover:opacity-80">
+            <div
+              key={v.videoId}
+              className={`flex gap-3 px-6 py-3 ${v.videoId === selectedId ? 'bg-accent' : ''}`}
+            >
+              <button onClick={() => onSelect(v)} className="flex-shrink-0 rounded-lg transition-opacity hover:opacity-80">
                 <img
                   src={v.thumbnail || `https://img.youtube.com/vi/${v.videoId}/hqdefault.jpg`}
                   alt=""
@@ -287,7 +303,7 @@ function VideoList({ t, onPreview }) {
                 />
               </button>
               <div className="min-w-0 flex-1">
-                <button onClick={() => onPreview(v)} className="block w-full truncate text-left text-sm font-medium text-text hover:text-muted">
+                <button onClick={() => onSelect(v)} className="block w-full truncate text-left text-sm font-medium text-text hover:text-muted">
                   {v.title}
                 </button>
                 <p className="mt-0.5 truncate text-xs text-muted">{v.channelTitle}</p>

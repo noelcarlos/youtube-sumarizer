@@ -140,6 +140,7 @@
     "range_month": "Last month",
     "hideQueued": "Hide already enqueued",
     "loadMore": "Load more ({count})",
-    "backToList": "Back to list"
+    "selectToPlay": "Select a video from the list to play it here.",
+    "closePreview": "Close player"
   }
 }
