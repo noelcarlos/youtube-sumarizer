@@ -1593,40 +1593,78 @@ export class EmailStage extends BaseStage {
             const fullContentHtml = marked(enrichedData.fullContent + "\n\n");
 
             // 4) Build HTML Email
+            // Estilo minimalista 2026 (referencia: redesign.md). Sin boton rojo, sin serif, sin
+            // bordes negros de 1px — un link mono sutil en vez del botón, y las imágenes que
+            // vengan dentro del markdown (diagramas tipo RAG) entran en una card blanca con
+            // borde en vez de flotar sueltas. Email, no web: todo el CSS va inline/en <style>
+            // dentro de <head>, sin depender de nada externo salvo la fuente de Google Fonts
+            // (con una pila de fallback de sistema por si el cliente de correo la bloquea).
             const finalHtml = `
     <!DOCTYPE html>
     <html>
     <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
     <style>
-        body { font-family: Arial, sans-serif; background: #f5f5f5; max-width: 800px; margin: auto; }
-        .container { background: white; padding: 30px; border-radius: 10px; }
-        h1 { color: #333; }
-        .header-img { width: 100%; border-radius: 8px; }
-        .btn { background: #cc0000; color: white; padding: 12px 24px; text-decoration: none; border-radius: 4px; font-weight: bold; }
+        body {
+            margin: 0; padding: 32px 16px; background: #FAFAFA;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            color: #3F3F46;
+        }
+        .mono { font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+        .container { background: #FFFFFF; max-width: 600px; margin: 0 auto; border-radius: 16px; padding: 32px; }
+        .thumb-link { display: block; }
+        .thumb { width: 100%; border-radius: 12px; display: block; }
+        .yt-link {
+            display: inline-block; margin-top: 16px; font-size: 13px; color: #71717A;
+            text-decoration: none; letter-spacing: 0.01em;
+        }
+        .yt-link:hover { color: #18181B; }
+        h1 { font-size: 28px; font-weight: 700; letter-spacing: -0.01em; color: #18181B; margin: 16px 0 8px; }
+        h2 { font-size: 20px; font-weight: 600; color: #18181B; margin: 32px 0 12px; }
+        p { font-size: 15px; line-height: 26px; color: #3F3F46; margin: 0 0 16px; }
+        ul, ol { padding-left: 20px; margin: 0 0 16px; }
+        li { font-size: 15px; line-height: 26px; color: #3F3F46; margin-bottom: 12px; }
+        a { color: #18181B; }
+        strong { color: #18181B; font-weight: 600; }
+        hr { border: none; border-top: 1px solid #E4E4E7; margin: 28px 0; }
+        /* Cualquier imagen dentro del contenido (diagramas, capturas) va en una card con borde,
+           en vez de suelta a ancho completo — esto cubre el diagrama RAG y cualquier otro. */
+        .content img {
+            display: block; max-width: 100%; border: 1px solid #E4E4E7; border-radius: 12px;
+            padding: 8px; background: #FFFFFF; margin: 8px 0 16px;
+        }
+        .footer {
+            margin-top: 40px; padding-top: 20px; border-top: 1px solid #E4E4E7;
+            font-size: 11px; color: #A1A1AA;
+        }
+        @media (max-width: 480px) {
+            body { padding: 16px 8px; }
+            .container { padding: 20px; border-radius: 12px; }
+            h1 { font-size: 24px; }
+            h2 { font-size: 18px; }
+        }
     </style>
     </head>
     <body>
         <div class="container">
-            <a href="${videoUrl}">
-                <img class="header-img" src="${thumbnailUrl}" />
+            <a class="thumb-link" href="${videoUrl}">
+                <img class="thumb" src="${thumbnailUrl}" alt="" />
             </a>
+            <a class="yt-link mono" href="${videoUrl}">Ver en YouTube →</a>
 
             <h1>${title}</h1>
 
-            <div style="text-align: center; margin-bottom: 20px;">
-                <a class="btn" href="${videoUrl}">Watch on YouTube</a>
-            </div>
+            <div class="content">${bodyHtml}</div>
 
-            ${bodyHtml}
+            <h2>Contenido completo</h2>
 
-            <div style="text-align: left; margin-bottom: 20px;">
-                <h2>Contenido completo</h2>
-            </div>
+            <div class="content">${fullContentHtml}</div>
 
-            ${fullContentHtml}
-
-            <p style="font-size: 12px; color: #777; margin-top: 40px;">
-                Generated automatically — Video ID: ${videoId} Model: ${enrichedData.model || 'N/A'} Client: ${enrichedData.client || 'N/A'}
+            <p class="footer mono">
+                Video ID: ${videoId} · Model: ${enrichedData.model || 'N/A'} · Client: ${enrichedData.client || 'N/A'}
             </p>
         </div>
     </body>
