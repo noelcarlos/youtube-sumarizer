@@ -238,53 +238,10 @@ function readerPage(videoId, bodyHtml, videoUrl) {
 </html>`;
 }
 
-const WEB_DIST = new URL('./web/dist/', import.meta.url);
-const CONTENT_TYPES = {
-    '.html': 'text/html; charset=utf-8',
-    '.js': 'text/javascript; charset=utf-8',
-    '.css': 'text/css; charset=utf-8',
-    '.svg': 'image/svg+xml',
-    '.png': 'image/png',
-    '.ico': 'image/x-icon',
-    '.json': 'application/json; charset=utf-8',
-};
-
-/** Sirve `web/dist` (el build de Vite). Sin rutas dentro de la app (no hay react-router, es una
- * sola pagina), asi que cualquier GET que no sea un fichero real cae al index.html del build —
- * y si NO hay build todavia (no se ha corrido `npm run build` en web/), dice exactamente eso en
- * vez de un 404 mudo. Devuelve `false` si no pudo servir nada (para que el caller decida el 404). */
-async function serveStatic(res, pathname) {
-    const rel = pathname === '/' ? 'index.html' : pathname.replace(/^\/+/, '');
-    const candidate = new URL(rel, WEB_DIST);
-
-    let filePath = candidate;
-    let data;
-    try {
-        data = await fs.readFile(candidate);
-    } catch {
-        // no es un fichero real (o no existe): probamos con el index.html del build para SPA
-        try {
-            filePath = new URL('index.html', WEB_DIST);
-            data = await fs.readFile(filePath);
-        } catch {
-            res.writeHead(503, { 'Content-Type': 'text/plain; charset=utf-8' });
-            res.end('web/dist no existe todavia. Corre "npm run build" (o "npm run dev" en web/ para desarrollo).');
-            return true;
-        }
-    }
-
-    const ext = path.extname(filePath.pathname);
-    const isIndexHtml = filePath.pathname.endsWith('/index.html');
-    // index.html cambia de contenido en cada build SIN cambiar de nombre (referencia los assets
-    // por su nombre con hash), asi que si el navegador lo cachea, se queda mirando para siempre
-    // los assets de un build viejo aunque haya uno nuevo en disco - exactamente lo que paso aqui.
-    // Los assets con hash (index-XXXX.js/.css) si son seguros de cachear fuerte: si cambia el
-    // contenido, cambia el nombre del fichero.
-    const cacheControl = isIndexHtml ? 'no-cache' : 'public, max-age=31536000, immutable';
-    res.writeHead(200, { 'Content-Type': CONTENT_TYPES[ext] || 'application/octet-stream', 'Cache-Control': cacheControl });
-    res.end(data);
-    return true;
-}
+// Ya no hay nada que servir aqui: server.js paso de ser API+estaticos a ser solo API+workers
+// del pipeline. La UI la sirve Next.js en su propio proceso/puerto (web/), que le hace proxy a
+// /api/* de aqui via next.config.js#rewrites — el mismo patron que ya usaba el proxy de Vite en
+// dev, pero funcionando tambien en produccion.
 
 async function readFirstExisting(paths) {
     for (const p of paths) {
@@ -485,14 +442,6 @@ const server = http.createServer(async (req, res) => {
             return sendJson(res, 200, { enqueued: count, urls });
         }
 
-        if (req.method === 'GET' && !url.pathname.startsWith('/api/')) {
-            // Sirve el build de React (web/dist, generado por `npm run build` en web/). En dev,
-            // el frontend corre aparte con `vite` (web/dev) y su proxy manda /api aqui — esta
-            // rama solo se usa en produccion, cuando server.js sirve los estaticos ya construidos.
-            const served = await serveStatic(res, url.pathname);
-            if (served) return;
-        }
-
         res.writeHead(404).end('not found');
     } catch (err) {
         console.error('❌ error en el servidor:', err);
@@ -505,5 +454,5 @@ const server = http.createServer(async (req, res) => {
 // escuchaba en 127.0.0.1 — su propio vite.config.js documenta el incidente. Escuchar solo en
 // 127.0.0.1 evita que este servidor le pueda hacer lo mismo a nadie mas.
 server.listen(PORT, '127.0.0.1', () => {
-    console.log(`🟢 youtube-sumarizer server escuchando en http://localhost:${PORT}`);
+    console.log(`🟢 API + workers del pipeline escuchando en http://localhost:${PORT} (la UI la sirve Next.js aparte, en web/)`);
 });

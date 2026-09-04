@@ -1,3 +1,5 @@
+"use client";
+
 import { useEffect, useState } from 'react';
 import { useQueueState } from '../hooks/useQueueState.js';
 import { EnqueueForm } from '../components/EnqueueForm.jsx';

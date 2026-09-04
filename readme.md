@@ -12,47 +12,53 @@ node resumir_video.js --all --url "https://www.youtube.com/watch?v=IOZv3iVZIhg"
 
 ### Servidor persistente
 
-Monorepo con workspaces npm, igual que `iron-agile-bot` (`server.js` en la raíz, la UI en
-`web/`). Primera vez, un solo `npm install` en la raíz instala las dos partes.
+Monorepo con workspaces npm: `server.js` en la raíz es el backend (API + los 4 workers del
+pipeline), y `web/` es la UI, una app Next.js 16 (App Router) — dos procesos separados, cada uno
+en su puerto. Primera vez, un solo `npm install` en la raíz instala las dos partes.
+
+**Backend** (API + workers, `http://127.0.0.1:4577`):
 
 ```bash
-npm install
 npm start
 ```
 
-`npm start` compila la UI (`vite build` → `web/dist`) y arranca `server.js` con `--watch`, que
-sirve ese build directamente — igual que `iron-agile-bot` (`npm run build && node --watch
-server/src/index.js`). Se reinicia solo si tocas el backend; para la UI hay que repetir el build
-si no usas el modo dev de abajo.
+`127.0.0.1` explícito, no el wildcard, para no repetir con nadie el mismo choque de puerto que
+tuvo `iron-agile-bot` con este proyecto (su propio `web/next.config.js` lo cuenta, ver más abajo).
+4577 es distinto del `4173` de `iron-agile-bot` a propósito. Arranca las 4 etapas (`download`,
+`ai-summarize`, `interpret-summary`, `email`) como workers que corren a la vez para siempre,
+vigilando sus propias carpetas — a diferencia de la CLI, que procesa lo que haya en la cola y
+sale.
 
-Arranca las 4 etapas (`download`, `ai-summarize`, `interpret-summary`, `email`) como workers que
-corren a la vez para siempre, vigilando sus propias carpetas — a diferencia de la CLI, que
-procesa lo que haya en la cola y sale. Escucha en `http://127.0.0.1:4577` (`PORT` en `.env` lo
-cambia) — en `127.0.0.1` explícito, no el wildcard, para no repetir con nadie el mismo choque de
-puerto que tuvo `iron-agile-bot` con este proyecto (su propio `web/vite.config.js` lo cuenta).
-4577 es distinto del `4173` de `iron-agile-bot` a propósito.
-
-**Desarrollo de la UI** (dos terminales, con hot-reload de React):
+**UI** (Next.js, `http://localhost:3000`):
 
 ```bash
-npm run dev:server   # backend en :4577
-npm run dev           # vite en su propio puerto, /api proxeado a :4577
+npm run dev            # desarrollo, con hot-reload
+# o en producción:
+npm run build && npm run start:web
 ```
 
-Con el servidor corriendo, abre la URL que imprime `npm run dev` (o `http://localhost:4577` si
-usaste `npm start`):
+`web/next.config.js` reenvía `/api/*` al backend (127.0.0.1:4577) vía `rewrites()` — el mismo
+patrón que usaba el proxy de dev de Vite, pero que aquí también funciona en producción. Hacen
+falta los DOS procesos corriendo a la vez (backend + UI) — abre siempre `http://localhost:3000`,
+no el 4577 (eso es sólo la API).
 
 - **UI**: pestañas por etapa (Descarga / Resumen IA / Interpretar / Email / Terminado / Error),
-  formulario para encolar con botón de encolar del portapapeles (un click), y botón "reprocesar"
-  en las filas que fallaron.
+  formulario para encolar con botón de encolar del portapapeles (un click), tarjetas en grid que
+  aprovecha el ancho completo, y un drawer de lectura ("leer resumen") con 3 modos (mitad /
+  pantalla completa / split con el reproductor de YouTube embebido) y 4 pestañas (Resumen / Email
+  / .md / Transcripción).
 - **API**:
   - `GET /api/state` — la cola completa, con la etapa de cada vídeo derivada en vivo de las
     carpetas (sin base de datos aparte).
-  - `GET /api/videos/:id/reader` — el resumen ya renderizado a HTML.
+  - `GET /api/videos/:id/data` — el `enriched.json` entero como JSON (resumen, transcripción,
+    modelo, email) en una sola llamada, para el drawer.
+  - `GET /api/videos/:id/reader` — el resumen ya renderizado a HTML (fuera del drawer).
   - `GET /api/videos/:id/email` — el email tal cual se envió.
   - `GET /api/videos/:id/markdown` — el `.summary.md` en crudo.
   - `POST /api/enqueue` con `{ "url": "..." }` o `{ "urls": [...] }`.
   - `POST /api/videos/:id/requeue` — mueve un vídeo de `error/` de vuelta a `input/` de su etapa.
+  - `POST /api/videos/:id/resend` — reenvía el `.email.html` ya generado, sin pasar por el pipeline.
+  - `DELETE /api/videos/:id` — borra definitivamente un vídeo que está en `error/`.
 
 ### CLI para encolar (`queue-cli.js`)
 

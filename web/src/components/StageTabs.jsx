@@ -1,3 +1,5 @@
+"use client";
+
 import { TABS, matchesTab } from '../stages.js';
 
 export function StageTabs({ videos, active, onChange }) {

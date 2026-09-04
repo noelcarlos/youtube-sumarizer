@@ -1,3 +1,5 @@
+"use client";
+
 /** Embed publico, sin OAuth ni API key — youtube-nocookie.com es el dominio que YouTube ofrece
  * exactamente para esto (no pone cookies de seguimiento hasta que el usuario le da play). */
 export function YouTubePlayer({ videoId, className = '' }) {

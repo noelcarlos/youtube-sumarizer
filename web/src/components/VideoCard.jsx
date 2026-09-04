@@ -1,3 +1,5 @@
+"use client";
+
 import { useState } from 'react';
 import { Loader2, RotateCcw, Trash2 } from 'lucide-react';
 import { STATIONS, stationClasses, currentLabel, isProcessing } from '../stages.js';

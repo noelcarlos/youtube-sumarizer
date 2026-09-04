@@ -1,3 +1,5 @@
+"use client";
+
 export function VideoCardSkeleton() {
   return (
     <div className="rounded-2xl border border-border bg-card p-4 shadow-[var(--shadow-soft)]">
