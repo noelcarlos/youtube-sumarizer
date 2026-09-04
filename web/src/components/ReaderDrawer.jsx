@@ -73,7 +73,7 @@ function DrawerHeader({ videoId, data, mode, onModeChange, t }) {
             rel="noreferrer"
             className="font-mono text-xs text-muted hover:text-text"
           >
-            {videoId}
+            {t('watchOnYoutube')}
           </a>
         )}
       </div>
@@ -99,17 +99,15 @@ function DrawerHeader({ videoId, data, mode, onModeChange, t }) {
 
 function DrawerTabs({ data, t }) {
   return (
-    <Tabs defaultValue="resumen" className="flex flex-1 flex-col overflow-hidden">
+    // "email" primero y por defecto: es la vista que mejor queda (el diseño 2026 que se hizo
+    // para la plantilla de email), asi que es lo primero que se ve al abrir el drawer.
+    <Tabs defaultValue="email" className="flex flex-1 flex-col overflow-hidden">
       <TabsList className="mx-6 mt-3 w-fit bg-zinc-100 text-muted">
-        <TabsTrigger value="resumen">{t('tabSummary')}</TabsTrigger>
         <TabsTrigger value="email">{t('tabEmail')}</TabsTrigger>
+        <TabsTrigger value="resumen">{t('tabSummary')}</TabsTrigger>
         <TabsTrigger value="md">{t('tabMarkdown')}</TabsTrigger>
         <TabsTrigger value="transcripcion">{t('tabTranscript')}</TabsTrigger>
       </TabsList>
-
-      <TabsContent value="resumen" className="flex-1 overflow-y-auto p-6">
-        <Prose>{data.summaryBody}</Prose>
-      </TabsContent>
 
       <TabsContent value="email" className="flex-1 overflow-hidden p-6">
         {data.emailHtml ? (
@@ -117,6 +115,10 @@ function DrawerTabs({ data, t }) {
         ) : (
           <p className="text-sm text-muted">{t('noEmailYet')}</p>
         )}
+      </TabsContent>
+
+      <TabsContent value="resumen" className="flex-1 overflow-y-auto p-6">
+        <Prose>{data.summaryBody}</Prose>
       </TabsContent>
 
       <TabsContent value="md" className="flex-1 overflow-y-auto p-6">

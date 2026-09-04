@@ -83,15 +83,32 @@ export function VideoCard({ video, onOpenReader }) {
       </div>
 
       <div className="flex gap-3.5">
-        <img
-          src={`https://img.youtube.com/vi/${video.videoId}/hqdefault.jpg`}
-          alt=""
-          width={120}
-          height={68}
-          loading="lazy"
-          className="h-[68px] w-[120px] flex-shrink-0 rounded-lg border border-border object-cover"
-          onError={(e) => { e.currentTarget.style.visibility = 'hidden'; }}
-        />
+        {canOpenReader(video) ? (
+          <button
+            onClick={() => onOpenReader(video.videoId)}
+            className="flex-shrink-0 rounded-lg transition-opacity hover:opacity-80"
+          >
+            <img
+              src={`https://img.youtube.com/vi/${video.videoId}/hqdefault.jpg`}
+              alt=""
+              width={120}
+              height={68}
+              loading="lazy"
+              className="h-[68px] w-[120px] rounded-lg border border-border object-cover"
+              onError={(e) => { e.currentTarget.style.visibility = 'hidden'; }}
+            />
+          </button>
+        ) : (
+          <img
+            src={`https://img.youtube.com/vi/${video.videoId}/hqdefault.jpg`}
+            alt=""
+            width={120}
+            height={68}
+            loading="lazy"
+            className="h-[68px] w-[120px] flex-shrink-0 rounded-lg border border-border object-cover"
+            onError={(e) => { e.currentTarget.style.visibility = 'hidden'; }}
+          />
+        )}
 
         <div className="min-w-0 flex-1">
           <div className="flex min-w-0 items-center gap-2">
@@ -109,9 +126,18 @@ export function VideoCard({ video, onOpenReader }) {
             )}
           </div>
 
-          <div className={video.title ? 'mt-0.5 truncate text-base font-semibold text-text' : 'mt-0.5 text-base italic text-muted'}>
-            {video.title || t('pendingTitle')}
-          </div>
+          {canOpenReader(video) ? (
+            <button
+              onClick={() => onOpenReader(video.videoId)}
+              className="mt-0.5 block w-full truncate text-left text-base font-semibold text-text hover:text-muted"
+            >
+              {video.title || t('pendingTitle')}
+            </button>
+          ) : (
+            <div className={video.title ? 'mt-0.5 truncate text-base font-semibold text-text' : 'mt-0.5 text-base italic text-muted'}>
+              {video.title || t('pendingTitle')}
+            </div>
+          )}
 
           <div className="mt-1 flex min-w-0 items-center gap-2 text-sm text-muted">
             <StatusDot video={video} processing={processing} />

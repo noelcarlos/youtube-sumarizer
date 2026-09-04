@@ -51,6 +51,7 @@
   },
   "ReaderDrawer": {
     "loading": "Loading…",
+    "watchOnYoutube": "Watch on YouTube →",
     "loadFailed": "Couldn't load: {error}",
     "tabSummary": "Summary",
     "tabEmail": "Email",
