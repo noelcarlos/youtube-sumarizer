@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { useTranslations } from 'next-intl';
 import { useSession, signIn, signOut } from 'next-auth/react';
-import { Loader2, LogOut, RotateCcw, Send, MonitorPlay } from 'lucide-react';
+import { Loader2, RotateCcw, Send, MonitorPlay } from 'lucide-react';
 import { Sheet, SheetContent } from './ui/sheet.jsx';
 
 export function SubscriptionsDrawer() {
@@ -105,25 +105,15 @@ function VideoList({ t }) {
     <div className="flex flex-1 flex-col overflow-hidden">
       <div className="flex items-center justify-between gap-3 border-b border-border px-6 py-3">
         <p className="text-xs text-muted">{t('subscriptionsIntro')}</p>
-        <div className="flex flex-shrink-0 items-center gap-2">
-          <button
-            onClick={() => load(true)}
-            disabled={refreshing}
-            title={t('refresh')}
-            aria-label={t('refresh')}
-            className="flex items-center justify-center rounded-lg border border-border p-1.5 text-muted transition-colors hover:bg-accent hover:text-text disabled:opacity-60"
-          >
-            <RotateCcw size={13} className={refreshing ? 'animate-spin' : ''} />
-          </button>
-          <button
-            onClick={() => signOut()}
-            title={t('disconnect')}
-            aria-label={t('disconnect')}
-            className="flex items-center justify-center rounded-lg border border-border p-1.5 text-muted transition-colors hover:bg-accent hover:text-text"
-          >
-            <LogOut size={13} />
-          </button>
-        </div>
+        <button
+          onClick={() => load(true)}
+          disabled={refreshing}
+          title={t('refresh')}
+          aria-label={t('refresh')}
+          className="flex flex-shrink-0 items-center justify-center rounded-lg border border-border p-1.5 text-muted transition-colors hover:bg-accent hover:text-text disabled:opacity-60"
+        >
+          <RotateCcw size={13} className={refreshing ? 'animate-spin' : ''} />
+        </button>
       </div>
 
       {loading && (
@@ -164,6 +154,17 @@ function VideoList({ t }) {
           ))}
         </div>
       )}
+
+      {/* Texto, no un icono al lado de "Actualizar" — un desconectar accidental de un click en
+          el icono equivocado obliga a repetir todo el login de Google por nada. */}
+      <div className="border-t border-border px-6 py-3">
+        <button
+          onClick={() => { if (confirm(t('disconnectConfirm'))) signOut(); }}
+          className="text-xs text-muted underline-offset-2 hover:text-text hover:underline"
+        >
+          {t('disconnect')}
+        </button>
+      </div>
     </div>
   );
 }
