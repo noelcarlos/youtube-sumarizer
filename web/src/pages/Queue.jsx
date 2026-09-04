@@ -13,7 +13,7 @@ export function Queue() {
   const activeCount = videos.filter(isProcessing).length;
 
   return (
-    <main className="mx-auto max-w-4xl px-6 py-9 pb-20">
+    <main className="mx-auto max-w-[1200px] px-6 py-9 pb-20">
       <header className="mb-1.5 flex items-baseline justify-between border-b-2 border-ink pb-2.5">
         <div className="flex items-center gap-3">
           <h1 className="text-2xl font-semibold tracking-wide">youtube-sumarizer</h1>
