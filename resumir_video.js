@@ -133,7 +133,7 @@ const OVERRIDE_LANG = null; //"Español"; // Set to null to auto-detect
 // ==========================================================
 
 class IModelClient {
-    async generateContent(promptContent) { throw new Error("Method 'generateContent' is not implemented."); }
+    async generateContent(promptContent, signal) { throw new Error("Method 'generateContent' is not implemented."); }
 }
 
 /** The ceiling on a completion. Deliberately NOT derived from the prompt size.
@@ -198,7 +198,10 @@ class GeminiClient extends IModelClient {
         this.ai = new GoogleGenAI({ apiKey });
         this.modelName = modelName;
     }
-    async generateContent(promptContent) {
+    async generateContent(promptContent, signal) {
+        // El SDK de Gemini no soporta cancelar una llamada en curso vía AbortSignal (a
+        // diferencia del cliente OpenAI-compatible) — cancelar mientras corre en Gemini no
+        // interrumpe la petición ya en vuelo, solo evita que se lance la siguiente.
         const response = await this.ai.models.generateContent({
             model: this.modelName, contents: promptContent,
         });
@@ -223,7 +226,7 @@ class OpenAICompatibleClient extends IModelClient {
         this.modelName = modelName;
         this.label = label;
     }
-    async generateContent(promptContent) {
+    async generateContent(promptContent, signal) {
         console.log(`   🤖 [${this.label}] Request → prompt length: ${promptContent.length} chars (timeout: ${Math.round(this.ai.timeout / 1000)}s, max_tokens: provider default)`);
 
         const startedAt = Date.now();
@@ -233,7 +236,7 @@ class OpenAICompatibleClient extends IModelClient {
                 model: this.modelName,
                 messages: [{ role: "user", content: promptContent }],
                 temperature: 0.1,
-            }));
+            }, { signal }));
         } catch (err) {
             const elapsedSec = Math.round((Date.now() - startedAt) / 1000);
             console.error(`   ❌ [${this.label}] API error after ${elapsedSec}s: ${err.message}`);
@@ -268,7 +271,7 @@ class LMStudioClient extends IModelClient {
         this.ai = new OpenAI({ apiKey, baseURL: baseUrl, timeout: timeoutMs, fetch: fetchWithDispatcher });
         this.modelName = modelName;
     }
-    async generateContent(promptContent) {
+    async generateContent(promptContent, signal) {
         console.log(`   🤖 [LMStudio] Request → prompt length: ${promptContent.length} chars (timeout: ${Math.round(this.ai.timeout / 1000)}s, max_tokens: ${LOCAL_MAX_OUTPUT_TOKENS.toLocaleString()})`);
 
         const startedAt = Date.now();
@@ -279,7 +282,7 @@ class LMStudioClient extends IModelClient {
                 messages: [{ role: "user", content: promptContent }],
                 temperature: 0,
                 max_tokens: LOCAL_MAX_OUTPUT_TOKENS,
-            }));
+            }, { signal }));
         } catch (err) {
             const elapsedSec = Math.round((Date.now() - startedAt) / 1000);
             console.error(`   ❌ [LMStudio] API error after ${elapsedSec}s: ${err.message}`);
@@ -1215,6 +1218,11 @@ export class AiSummarizeStage extends BaseStage {
             logger
         });
         this.aiClient = aiClient;
+        // Progreso EN VIVO del video que se esta procesando ahora mismo, para que server.js lo
+        // exponga en /api/state — sin esto, la UI no puede distinguir "este es el que de verdad
+        // esta corriendo" de "estos otros 3 solo estan esperando su turno en la misma carpeta".
+        // Se pisa entero (no se acumula) cada vez que execute() arranca un fichero nuevo.
+        this.currentJob = null;
     }
 
     /** 12,000 is measured, not guessed. Sweeping this value against a real 49k transcript on
@@ -1367,15 +1375,17 @@ export class AiSummarizeStage extends BaseStage {
 
     async processChunks(chunks) {
         const results = [];
+        if (this.currentJob) this.currentJob.totalChunks = chunks.length;
 
         for (let i = 0; i < chunks.length; i++) {
             const chunkStart = Date.now();
             const input = chunks[i];
+            if (this.currentJob) this.currentJob.currentChunk = i + 1;
 
             console.log(`   ▶️  Chunk ${i + 1}/${chunks.length} (${input.length} chars) — iniciando...`);
 
             const prompt = this.buildChunkPrompt(input, i + 1, chunks.length);
-            const { rawContent } = await this.aiClient.generateContent(prompt);
+            const { rawContent } = await this.aiClient.generateContent(prompt, this.currentJob?.abortController.signal);
             const content = this.rewrapLongParagraphs(this.cleanProse(rawContent));
 
             if (!content) {
@@ -1457,11 +1467,13 @@ export class AiSummarizeStage extends BaseStage {
 
         console.log(`   📝 [PASO 1/2] Generando resumen corto...`);
         const step1Start = Date.now();
-        const { client, model, rawContent } = await this.aiClient.generateContent(prompt);
+        if (this.currentJob) this.currentJob.step = 'summary';
+        const { client, model, rawContent } = await this.aiClient.generateContent(prompt, this.currentJob?.abortController.signal);
         console.log(`   ✅ [PASO 1/2] Resumen corto listo en ${Math.round((Date.now() - step1Start) / 1000)}s`);
 
         console.log(`   📝 [PASO 2/2] Generando versión completa reescrita (chunk por chunk, más lento)...`);
         const step2Start = Date.now();
+        if (this.currentJob) this.currentJob.step = 'rewrite';
         const fullContentChunks = await this.buildRawTranscript(transcript) || ""
         console.log(`   ✅ [PASO 2/2] Versión completa lista en ${Math.round((Date.now() - step2Start) / 1000)}s`);
 
@@ -1476,6 +1488,21 @@ export class AiSummarizeStage extends BaseStage {
     async execute(filePath) {
 
         const videoId = extractVideoIdFromPath(filePath);
+        const fileSizeBytes = await fs.stat(filePath).then(s => s.size).catch(() => 0);
+
+        // this.currentJob es lo que server.js lee para /api/state y para el boton de cancelar —
+        // se pisa entero al empezar cada fichero y se limpia SIEMPRE al salir (exito, error o
+        // cancelacion), en el finally de abajo, para que nunca se quede un job "fantasma" si
+        // execute() termina por cualquier camino que no sea el feliz.
+        this.currentJob = {
+            videoId,
+            step: 'summary',
+            currentChunk: 0,
+            totalChunks: 0,
+            fileSizeBytes,
+            startedAt: Date.now(),
+            abortController: new AbortController(),
+        };
 
         const fileStart = Date.now();
         try {
@@ -1515,8 +1542,16 @@ export class AiSummarizeStage extends BaseStage {
             console.log(`   🏁 ${videoId} completado en ${Math.round((Date.now() - fileStart) / 1000)}s`);
 
         } catch (err) {
-            console.error(`   ❌ Error processing ${filePath}: ${err.message}`, err);
-            await this.moveToError([filePath], err);
+            // El SDK de OpenAI no pone err.name a "APIUserAbortError" de verdad (se queda en el
+            // "Error" por defecto que hereda de la clase base) — la unica forma fiable de saber
+            // si esto vino de pulsar "cancelar" es mirar la señal que NOSOTROS controlamos, no
+            // adivinar la forma del error. Si esta aborted, es el usuario, no un fallo real.
+            const wasCancelled = this.currentJob?.abortController.signal.aborted ?? false;
+            const reported = wasCancelled ? new Error('Cancelado por el usuario') : err;
+            console.error(`   ${wasCancelled ? '🛑' : '❌'} ${wasCancelled ? 'Cancelado' : 'Error procesando'} ${filePath}: ${err.message}`);
+            await this.moveToError([filePath], reported);
+        } finally {
+            this.currentJob = null;
         }
     }
 }
@@ -1847,11 +1882,16 @@ export async function runStageWorker(stage, { filterInput, upstreamDone, nextInp
         const files = await stage.listInputs(filterInput);
 
         for (const file of files) {
+            // El worker procesa un fichero a la vez — esto es lo que le dice a server.js CUAL
+            // de los que estan en input/ es el que de verdad esta corriendo ahora mismo, para que
+            // la UI no pinte a los otros 3 en cola como si tambien estuvieran activos.
+            stage.activeVideoId = extractVideoIdFromPath(file);
             try {
                 await stage.execute(path.join(stage.inputDir, file));
             } catch (err) {
                 // ya se registro y se movio a error/ dentro de stage.execute()
             }
+            stage.activeVideoId = null;
             if (nextInputDir) {
                 await moveOutputs(stage.outputDir, nextInputDir, filterMove ?? filterInput);
             }

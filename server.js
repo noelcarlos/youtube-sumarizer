@@ -234,6 +234,39 @@ async function buildState() {
     return [...byVideo.values()];
 }
 
+const ACTIVE_BY_STAGE = {
+    DOWNLOAD: downloader,
+    AI_SUMMARIZE: aiSummarizer,
+    INTERPRET_SUMMARY: interpretSummaryStage,
+    EMAIL: emailer,
+};
+
+/** El worker de cada etapa procesa UN fichero a la vez (ver runStageWorker en
+ * resumir_video.js), pero /api/state antes marcaba como "procesando" a TODOS los que estuvieran
+ * en input/ de esa etapa — con 4 videos esperando turno en AI_SUMMARIZE, la UI los pintaba a los
+ * 4 con el spinner activo, cuando en realidad solo uno estaba corriendo de verdad y los otros 3
+ * ni habian empezado. `stage.activeVideoId` es la fuente de verdad de cual es cual. */
+function activeInfoFor(v) {
+    const stage = ACTIVE_BY_STAGE[v.stage];
+    if (!stage || v.bucket !== 'input' || stage.activeVideoId !== v.videoId) {
+        return { processing: false, aiProgress: null };
+    }
+    if (v.stage === 'AI_SUMMARIZE' && aiSummarizer.currentJob) {
+        const j = aiSummarizer.currentJob;
+        return {
+            processing: true,
+            aiProgress: {
+                step: j.step,
+                currentChunk: j.currentChunk,
+                totalChunks: j.totalChunks,
+                fileSizeBytes: j.fileSizeBytes,
+                elapsedSec: Math.round((Date.now() - j.startedAt) / 1000),
+            },
+        };
+    }
+    return { processing: true, aiProgress: null };
+}
+
 /** Rellena titulo/idioma/modelo/url en cuanto existan — aparecen en cuanto termina 2A o 2B,
  * asi que antes de eso el video solo se ve por su id. */
 async function enrichVideo(v) {
@@ -457,10 +490,24 @@ const server = http.createServer(async (req, res) => {
             const enriched = await Promise.all(state.map(async (v) => {
                 const e = await enrichVideo(v);
                 if (v.bucket === 'error') e.lastError = await lastErrorFor(v.videoId);
-                return e;
+                return { ...e, ...activeInfoFor(v) };
             }));
             enriched.sort((a, b) => STAGE_ORDER.indexOf(a.stage) - STAGE_ORDER.indexOf(b.stage) || a.videoId.localeCompare(b.videoId));
             return sendJson(res, 200, enriched);
+        }
+
+        if (req.method === 'POST' && url.pathname.startsWith('/api/videos/') && url.pathname.endsWith('/cancel')) {
+            const videoId = url.pathname.split('/')[3];
+            // Solo AI_SUMMARIZE puede cancelarse de verdad ahora mismo: es la unica etapa cuyo
+            // cliente de IA soporta abortar una peticion en vuelo (ver generateContent en
+            // resumir_video.js) — las demas etapas son lo bastante rapidas (descarga, escribir
+            // ficheros, mandar un email ya generado) como para que cancelarlas a mitad no sea algo
+            // que de verdad haga falta.
+            if (aiSummarizer.currentJob?.videoId !== videoId) {
+                return sendJson(res, 409, { error: `${videoId} no se esta procesando en AI Summarize ahora mismo` });
+            }
+            aiSummarizer.currentJob.abortController.abort();
+            return sendJson(res, 200, { cancelling: videoId });
         }
 
         if (req.method === 'GET' && url.pathname.startsWith('/api/videos/')) {

@@ -2,8 +2,14 @@
 
 import { useState } from 'react';
 import { useTranslations } from 'next-intl';
-import { Loader2, RotateCcw, Trash2 } from 'lucide-react';
-import { STATIONS, stationClasses, currentLabelKey, isProcessing } from '../stages.js';
+import { Loader2, RotateCcw, Trash2, X } from 'lucide-react';
+import { STATIONS, stationClasses, currentLabelKey, isProcessing, isQueued } from '../stages.js';
+
+function formatBytes(bytes) {
+  if (!bytes) return '0 KB';
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
 
 const STATION_COLOR = {
   done: 'bg-success',
@@ -32,13 +38,27 @@ export function VideoCard({ video, onOpenReader }) {
   const [requeued, setRequeued] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [deleted, setDeleted] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
   const classes = stationClasses(video);
   const { key: labelKey, failed } = currentLabelKey(video);
   const label = failed
     ? tStageLabel('failedSuffix', { stage: tStageLabel(labelKey) })
     : tStageLabel(labelKey);
   const processing = isProcessing(video);
+  const queued = isQueued(video);
   const isError = video.bucket === 'error';
+
+  async function cancel() {
+    setCancelling(true);
+    try {
+      const res = await fetch(`/api/videos/${video.videoId}/cancel`, { method: 'POST' });
+      if (!res.ok) throw new Error(await res.text());
+    } catch (err) {
+      alert(t('cancelFailed', { error: err.message }));
+    } finally {
+      setCancelling(false);
+    }
+  }
 
   async function requeue() {
     setRequeuing(true);
@@ -143,11 +163,15 @@ export function VideoCard({ video, onOpenReader }) {
             <StatusDot video={video} processing={processing} />
             <span className="flex flex-shrink-0 items-center gap-1">
               {processing && <Loader2 size={11} className="animate-spin" />}
-              {label}
+              {queued ? t('queued') : label}
             </span>
             {video.language && <span className="flex-shrink-0">· {video.language}</span>}
             {video.model && <span className="min-w-0 flex-1 truncate font-mono text-xs">· {video.model}</span>}
           </div>
+
+          {processing && video.stage === 'AI_SUMMARIZE' && video.aiProgress && (
+            <AiProgressBar progress={video.aiProgress} t={t} />
+          )}
 
           {video.lastError && (
             <div className="mt-2 rounded-lg bg-error/5 px-2.5 py-1.5 text-sm text-error">{video.lastError.error}</div>
@@ -160,6 +184,16 @@ export function VideoCard({ video, onOpenReader }) {
                 className="text-sm text-muted hover:text-text"
               >
                 {t('readSummary')}
+              </button>
+            )}
+            {processing && video.stage === 'AI_SUMMARIZE' && (
+              <button
+                onClick={cancel}
+                disabled={cancelling}
+                className="flex items-center gap-1 text-sm text-error hover:text-red-700 disabled:opacity-60"
+              >
+                <X size={12} />
+                {cancelling ? t('cancelling') : t('cancel')}
               </button>
             )}
             {isError && !requeued && (
@@ -186,6 +220,30 @@ export function VideoCard({ video, onOpenReader }) {
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+/** Paso 1 (resumen corto) es una sola llamada, sin sub-progreso que mostrar mas alla de cuanto
+ * lleva corriendo — la barra solo aparece en el paso 2 (reescritura chunk a chunk), que es
+ * donde de verdad hay un "cuantos de cuantos" que enseñar. */
+function AiProgressBar({ progress, t }) {
+  const { step, currentChunk, totalChunks, fileSizeBytes, elapsedSec } = progress;
+  const pct = step === 'rewrite' && totalChunks > 0 ? Math.round((currentChunk / totalChunks) * 100) : null;
+
+  return (
+    <div className="mt-2 rounded-lg border border-border bg-secondary/50 px-2.5 py-2">
+      <div className="flex items-center justify-between gap-2 text-xs text-muted">
+        <span className="truncate">
+          {step === 'rewrite' ? t('aiStepRewrite', { current: currentChunk, total: totalChunks }) : t('aiStepSummary')}
+        </span>
+        <span className="flex-shrink-0 font-mono">{formatBytes(fileSizeBytes)} · {elapsedSec}s</span>
+      </div>
+      {pct !== null && (
+        <div className="mt-1.5 h-1 w-full overflow-hidden rounded-full bg-border">
+          <div className="h-full rounded-full bg-warn transition-all" style={{ width: `${pct}%` }} />
+        </div>
+      )}
     </div>
   );
 }

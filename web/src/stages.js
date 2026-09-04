@@ -31,8 +31,18 @@ export function stationClasses(video) {
   });
 }
 
+/** `video.processing` viene de server.js, que sabe cual video es el que su worker esta corriendo
+ * de verdad ahora mismo (ver activeInfoFor en server.js) — antes esto se adivinaba mirando solo
+ * la etapa/bucket, y por eso 4 videos esperando turno en la misma carpeta se pintaban los 4 como
+ * "procesando" cuando en realidad el worker solo trabaja en uno a la vez. */
 export function isProcessing(video) {
-  return video.bucket !== 'error' && video.stage !== 'DONE' && stationClasses(video).includes('active');
+  return Boolean(video.processing);
+}
+
+/** Los que estan en la MISMA etapa que uno activo pero no son ESE video — a la espera de que el
+ * worker les llegue el turno, no procesando nada todavia. */
+export function isQueued(video) {
+  return !video.processing && video.bucket !== 'error' && video.stage !== 'DONE' && stationClasses(video).includes('active');
 }
 
 /** Devuelve la clave de StageLabel a usar ('sent' o la etapa actual) y si hay que componerla

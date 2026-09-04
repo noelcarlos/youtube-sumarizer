@@ -51,7 +51,13 @@
     "deleting": "deleting…",
     "confirmDelete": "Delete {videoId} for good? There's no undo.",
     "reprocessFailed": "Couldn't reprocess: {error}",
-    "deleteFailed": "Couldn't delete: {error}"
+    "deleteFailed": "Couldn't delete: {error}",
+    "queued": "queued — waiting its turn",
+    "cancel": "cancel",
+    "cancelling": "cancelling…",
+    "cancelFailed": "Couldn't cancel: {error}",
+    "aiStepSummary": "generating short summary…",
+    "aiStepRewrite": "rewriting — chunk {current}/{total}"
   },
   "ReaderDrawer": {
     "loading": "Loading…",

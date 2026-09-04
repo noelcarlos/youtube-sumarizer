@@ -51,7 +51,13 @@
     "deleting": "borrando…",
     "confirmDelete": "¿Borrar {videoId} definitivamente? No hay vuelta atrás.",
     "reprocessFailed": "No se pudo reprocesar: {error}",
-    "deleteFailed": "No se pudo borrar: {error}"
+    "deleteFailed": "No se pudo borrar: {error}",
+    "queued": "en cola — esperando su turno",
+    "cancel": "cancelar",
+    "cancelling": "cancelando…",
+    "cancelFailed": "No se pudo cancelar: {error}",
+    "aiStepSummary": "generando resumen corto…",
+    "aiStepRewrite": "reescribiendo — chunk {current}/{total}"
   },
   "ReaderDrawer": {
     "loading": "Cargando…",
