@@ -1,4 +1,6 @@
 import { Inter, JetBrains_Mono } from 'next/font/google';
+import { NextIntlClientProvider } from 'next-intl';
+import { getLocale } from 'next-intl/server';
 import './globals.css';
 
 // next/font en vez del <link> a Google Fonts que usaba web/index.html con Vite: descarga las
@@ -11,10 +13,19 @@ export const metadata = {
   title: 'youtube-sumarizer — cola',
 };
 
-export default function RootLayout({ children }) {
+export default async function RootLayout({ children }) {
+  const locale = await getLocale();
+
   return (
-    <html lang="es" className={`${inter.variable} ${jetbrainsMono.variable}`}>
-      <body>{children}</body>
+    <html lang={locale} className={`${inter.variable} ${jetbrainsMono.variable}`}>
+      <body>
+        {/* Sin `messages` explicito: las coge de src/i18n/request.js via el plugin de
+            next.config.js. El Provider hace que useTranslations() funcione en TODO el arbol de
+            cliente de abajo, incluido Queue.jsx aunque se monte con dynamic(ssr:false) — el
+            contexto de React atraviesa ese limite sin problema, solo se desactiva el renderizado
+            en servidor de ESE componente en concreto. */}
+        <NextIntlClientProvider>{children}</NextIntlClientProvider>
+      </body>
     </html>
   );
 }

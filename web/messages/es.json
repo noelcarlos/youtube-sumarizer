@@ -1,0 +1,76 @@
+{
+  "Header": {
+    "processing": "procesando ({count})",
+    "idle": "inactivo",
+    "pipelineSteps": ["descarga", "resume", "interpreta", "envía"]
+  },
+  "Queue": {
+    "serverError": "No se pudo hablar con el servidor: {error}",
+    "emptyAll": "Nada en cola todavía. Pega una URL arriba para empezar.",
+    "emptyTab": "Nada en esta pestaña."
+  },
+  "EnqueueForm": {
+    "placeholder": "pega una URL de YouTube (o varias separadas por coma)",
+    "enqueue": "Encolar",
+    "enqueuing": "Encolando…",
+    "pasteTitle": "Encolar del portapapeles (un click)",
+    "pasteFull": "Encolar portapapeles",
+    "pasteShort": "Portapapeles",
+    "clipboardDenied": "No se pudo leer el portapapeles — revisa el permiso del navegador para este sitio.",
+    "clipboardEmpty": "El portapapeles no tiene ninguna URL.",
+    "enqueueFailed": "No se pudo encolar: {error}"
+  },
+  "Stages": {
+    "all": "Todos",
+    "download": "Descarga",
+    "aiSummarize": "Resumen IA",
+    "interpretSummary": "Interpretar",
+    "email": "Email",
+    "done": "Terminado",
+    "error": "Error"
+  },
+  "StageLabel": {
+    "download": "descarga",
+    "aiSummarize": "resumen (ia)",
+    "interpretSummary": "interpretar",
+    "email": "email",
+    "sent": "enviado",
+    "failedSuffix": "{stage} — falló"
+  },
+  "VideoCard": {
+    "pendingTitle": "esperando título…",
+    "readSummary": "leer resumen",
+    "reprocess": "reprocesar",
+    "reprocessing": "reprocesando…",
+    "reprocessingNotice": "reprocesando — el worker lo recogerá solo",
+    "delete": "borrar",
+    "deleting": "borrando…",
+    "confirmDelete": "¿Borrar {videoId} definitivamente? No hay vuelta atrás.",
+    "reprocessFailed": "No se pudo reprocesar: {error}",
+    "deleteFailed": "No se pudo borrar: {error}"
+  },
+  "ReaderDrawer": {
+    "loading": "Cargando…",
+    "loadFailed": "No se pudo cargar: {error}",
+    "tabSummary": "Resumen",
+    "tabEmail": "Email",
+    "tabMarkdown": ".md",
+    "tabTranscript": "Transcripción",
+    "noEmailYet": "Este vídeo todavía no se ha enviado por email.",
+    "splitViewTitle": "Vista dividida: YouTube + resumen",
+    "backToHalf": "Volver a la mitad",
+    "fullscreen": "Pantalla completa",
+    "reprocess": "Reprocesar",
+    "copyMd": "Copiar .md",
+    "copied": "Copiado",
+    "sendEmail": "Enviar email",
+    "sending": "Enviando…",
+    "emailResent": "Email reenviado.",
+    "sendFailed": "No se pudo enviar: {error}",
+    "requeuedNotice": "Reencolado — el worker lo recogerá solo.",
+    "reprocessFailed": "No se pudo reprocesar: {error}"
+  },
+  "LanguageSwitcher": {
+    "label": "Idioma"
+  }
+}

@@ -1,17 +1,18 @@
-"use client";
+'use client';
 
 import { useEffect, useState } from 'react';
+import { useLocale, useTranslations } from 'next-intl';
 import { useQueueState } from '../hooks/useQueueState.js';
 import { EnqueueForm } from '../components/EnqueueForm.jsx';
 import { StageTabs } from '../components/StageTabs.jsx';
 import { VideoCard } from '../components/VideoCard.jsx';
 import { VideoCardSkeleton } from '../components/VideoCardSkeleton.jsx';
 import { ReaderDrawer } from '../components/ReaderDrawer.jsx';
+import { LanguageSwitcher } from '../components/LanguageSwitcher.jsx';
 import { matchesTab, isProcessing } from '../stages.js';
 
-const PIPELINE_STEPS = ['descarga', 'resume', 'interpreta', 'envía'];
-
 export function Queue() {
+  const t = useTranslations('Queue');
   const { videos, error, loading } = useQueueState();
   const [tab, setTab] = useState('ALL');
   const [readerVideoId, setReaderVideoId] = useState(null);
@@ -27,7 +28,10 @@ export function Queue() {
             <StatusBadge activeCount={activeCount} />
           </div>
           <Stepper />
-          <Clock />
+          <div className="flex flex-shrink-0 items-center gap-2 sm:gap-3">
+            <Clock />
+            <LanguageSwitcher />
+          </div>
         </div>
       </header>
 
@@ -37,7 +41,7 @@ export function Queue() {
       <main className="w-full max-w-none px-4 py-8 pb-20 sm:px-6">
         {error && (
           <p className="mb-4 rounded-xl border border-error/20 bg-error-bg px-3 py-2 text-sm text-error">
-            No se pudo hablar con el servidor: {error}
+            {t('serverError', { error })}
           </p>
         )}
 
@@ -52,9 +56,7 @@ export function Queue() {
           </div>
         ) : visible.length === 0 ? (
           <div className="rounded-2xl border border-dashed border-border py-16 text-center">
-            <p className="text-sm text-muted">
-              {videos.length === 0 ? 'Nada en cola todavía. Pega una URL arriba para empezar.' : 'Nada en esta pestaña.'}
-            </p>
+            <p className="text-sm text-muted">{videos.length === 0 ? t('emptyAll') : t('emptyTab')}</p>
           </div>
         ) : (
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
@@ -71,12 +73,14 @@ export function Queue() {
 }
 
 function Stepper() {
+  const t = useTranslations('Header');
+  const steps = t.raw('pipelineSteps');
   return (
     <div className="hidden items-center gap-1.5 font-mono text-xs text-muted md:flex">
-      {PIPELINE_STEPS.map((step, i) => (
+      {steps.map((step, i) => (
         <span key={step} className="flex items-center gap-1.5">
           {step}
-          {i < PIPELINE_STEPS.length - 1 && <span className="text-zinc-300">→</span>}
+          {i < steps.length - 1 && <span className="text-zinc-300">→</span>}
         </span>
       ))}
     </div>
@@ -84,6 +88,7 @@ function Stepper() {
 }
 
 function StatusBadge({ activeCount }) {
+  const t = useTranslations('Header');
   const active = activeCount > 0;
   return (
     <span
@@ -95,16 +100,17 @@ function StatusBadge({ activeCount }) {
       <span className={'relative flex h-2 w-2 items-center justify-center'}>
         <span className={'absolute h-2 w-2 animate-pulse rounded-full ' + (active ? 'bg-warn' : 'bg-zinc-400')} />
       </span>
-      {active ? `procesando (${activeCount})` : 'inactivo'}
+      {active ? t('processing', { count: activeCount }) : t('idle')}
     </span>
   );
 }
 
 function Clock() {
+  const locale = useLocale();
   const [now, setNow] = useState(() => new Date());
   useEffect(() => {
     const t = setInterval(() => setNow(new Date()), 1000);
     return () => clearInterval(t);
   }, []);
-  return <span className="hidden flex-shrink-0 font-mono text-xs text-muted sm:inline">{now.toLocaleTimeString('es-ES')}</span>;
+  return <span className="hidden flex-shrink-0 font-mono text-xs text-muted sm:inline">{now.toLocaleTimeString(locale)}</span>;
 }

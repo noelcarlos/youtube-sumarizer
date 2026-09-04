@@ -1,0 +1,76 @@
+{
+  "Header": {
+    "processing": "processing ({count})",
+    "idle": "idle",
+    "pipelineSteps": ["download", "summarize", "interpret", "send"]
+  },
+  "Queue": {
+    "serverError": "Couldn't reach the server: {error}",
+    "emptyAll": "Nothing in the queue yet. Paste a URL above to get started.",
+    "emptyTab": "Nothing in this tab."
+  },
+  "EnqueueForm": {
+    "placeholder": "paste a YouTube URL (or several, comma-separated)",
+    "enqueue": "Enqueue",
+    "enqueuing": "Enqueuing…",
+    "pasteTitle": "Enqueue from clipboard (one click)",
+    "pasteFull": "Enqueue from clipboard",
+    "pasteShort": "Clipboard",
+    "clipboardDenied": "Couldn't read the clipboard — check this site's browser permission.",
+    "clipboardEmpty": "The clipboard doesn't have any URL.",
+    "enqueueFailed": "Couldn't enqueue: {error}"
+  },
+  "Stages": {
+    "all": "All",
+    "download": "Download",
+    "aiSummarize": "AI Summary",
+    "interpretSummary": "Interpret",
+    "email": "Email",
+    "done": "Done",
+    "error": "Error"
+  },
+  "StageLabel": {
+    "download": "downloading",
+    "aiSummarize": "summarizing (ai)",
+    "interpretSummary": "interpreting",
+    "email": "emailing",
+    "sent": "sent",
+    "failedSuffix": "{stage} — failed"
+  },
+  "VideoCard": {
+    "pendingTitle": "waiting for title…",
+    "readSummary": "read summary",
+    "reprocess": "reprocess",
+    "reprocessing": "reprocessing…",
+    "reprocessingNotice": "reprocessing — the worker will pick it up on its own",
+    "delete": "delete",
+    "deleting": "deleting…",
+    "confirmDelete": "Delete {videoId} for good? There's no undo.",
+    "reprocessFailed": "Couldn't reprocess: {error}",
+    "deleteFailed": "Couldn't delete: {error}"
+  },
+  "ReaderDrawer": {
+    "loading": "Loading…",
+    "loadFailed": "Couldn't load: {error}",
+    "tabSummary": "Summary",
+    "tabEmail": "Email",
+    "tabMarkdown": ".md",
+    "tabTranscript": "Transcript",
+    "noEmailYet": "This video hasn't been emailed yet.",
+    "splitViewTitle": "Split view: YouTube + summary",
+    "backToHalf": "Back to half width",
+    "fullscreen": "Fullscreen",
+    "reprocess": "Reprocess",
+    "copyMd": "Copy .md",
+    "copied": "Copied",
+    "sendEmail": "Send email",
+    "sending": "Sending…",
+    "emailResent": "Email resent.",
+    "sendFailed": "Couldn't send: {error}",
+    "requeuedNotice": "Requeued — the worker will pick it up on its own.",
+    "reprocessFailed": "Couldn't reprocess: {error}"
+  },
+  "LanguageSwitcher": {
+    "label": "Language"
+  }
+}

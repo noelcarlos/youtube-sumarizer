@@ -1,22 +1,18 @@
-// Espejo de STAGE_ORDER/STAGE_LABEL en server.js — si se anade una etapa alli, tambien aqui.
+// Espejo de STAGE_ORDER en server.js — si se anade una etapa alli, tambien aqui. Los textos ya
+// NO viven aqui (antes estaban en español a pelo) — esto solo expone claves, la traduccion la
+// hace cada componente con useTranslations() usando esas claves contra messages/es.json|en.json.
 export const STATIONS = ['DOWNLOAD', 'AI_SUMMARIZE', 'INTERPRET_SUMMARY', 'EMAIL'];
 
-export const STATION_LABEL = {
-  DOWNLOAD: 'descarga',
-  AI_SUMMARIZE: 'resumen (ia)',
-  INTERPRET_SUMMARY: 'interpretar',
+// Stage constante -> clave del namespace "Stages"/"StageLabel" en los .json de mensajes.
+export const STAGE_MESSAGE_KEY = {
+  DOWNLOAD: 'download',
+  AI_SUMMARIZE: 'aiSummarize',
+  INTERPRET_SUMMARY: 'interpretSummary',
   EMAIL: 'email',
+  DONE: 'done',
 };
 
-export const TABS = [
-  { key: 'ALL', label: 'Todos' },
-  { key: 'DOWNLOAD', label: 'Descarga' },
-  { key: 'AI_SUMMARIZE', label: 'Resumen IA' },
-  { key: 'INTERPRET_SUMMARY', label: 'Interpretar' },
-  { key: 'EMAIL', label: 'Email' },
-  { key: 'DONE', label: 'Terminado' },
-  { key: 'ERROR', label: 'Error' },
-];
+export const TABS = ['ALL', 'DOWNLOAD', 'AI_SUMMARIZE', 'INTERPRET_SUMMARY', 'EMAIL', 'DONE', 'ERROR'];
 
 export function matchesTab(video, tabKey) {
   if (tabKey === 'ALL') return true;
@@ -39,8 +35,11 @@ export function isProcessing(video) {
   return video.bucket !== 'error' && video.stage !== 'DONE' && stationClasses(video).includes('active');
 }
 
-export function currentLabel(video) {
-  if (video.stage === 'DONE') return 'enviado';
-  const base = STATION_LABEL[video.stage] || video.stage.toLowerCase();
-  return video.bucket === 'error' ? `${base} — falló` : base;
+/** Devuelve la clave de StageLabel a usar ('sent' o la etapa actual) y si hay que componerla
+ * con el sufijo de fallo — la interpolacion real ("{stage} — falló") la hace el componente con
+ * t('StageLabel.failedSuffix', {stage}), para que el orden de palabras lo decida cada idioma. */
+export function currentLabelKey(video) {
+  if (video.stage === 'DONE') return { key: 'sent', failed: false };
+  const key = STAGE_MESSAGE_KEY[video.stage] || video.stage.toLowerCase();
+  return { key, failed: video.bucket === 'error' };
 }

@@ -1,24 +1,36 @@
-"use client";
+'use client';
 
+import { useTranslations } from 'next-intl';
 import { TABS, matchesTab } from '../stages.js';
 
+const TAB_MESSAGE_KEY = {
+  ALL: 'all',
+  DOWNLOAD: 'download',
+  AI_SUMMARIZE: 'aiSummarize',
+  INTERPRET_SUMMARY: 'interpretSummary',
+  EMAIL: 'email',
+  DONE: 'done',
+  ERROR: 'error',
+};
+
 export function StageTabs({ videos, active, onChange }) {
+  const t = useTranslations('Stages');
   return (
     <div className="mb-6 flex flex-wrap gap-1.5">
-      {TABS.map((tab) => {
-        const count = videos.filter((v) => matchesTab(v, tab.key)).length;
-        const isActive = tab.key === active;
+      {TABS.map((tabKey) => {
+        const count = videos.filter((v) => matchesTab(v, tabKey)).length;
+        const isActive = tabKey === active;
         return (
           <button
-            key={tab.key}
-            onClick={() => onChange(tab.key)}
+            key={tabKey}
+            onClick={() => onChange(tabKey)}
             className={
               'flex items-center gap-1.5 rounded-full px-3.5 py-1.5 text-sm font-medium transition-colors ' +
               (isActive ? 'bg-primary text-white' : 'text-muted hover:bg-zinc-100 hover:text-text')
             }
           >
-            {tab.label}
-            <span className={'font-mono text-xs ' + (isActive ? 'text-zinc-400' : 'text-zinc-400')}>{count}</span>
+            {t(TAB_MESSAGE_KEY[tabKey])}
+            <span className="font-mono text-xs text-zinc-400">{count}</span>
           </button>
         );
       })}

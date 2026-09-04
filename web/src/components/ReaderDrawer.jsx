@@ -1,6 +1,7 @@
-"use client";
+'use client';
 
 import { useState } from 'react';
+import { useTranslations } from 'next-intl';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Columns2, Copy, Loader2, Maximize2, Minimize2, RotateCcw, Send } from 'lucide-react';
@@ -20,6 +21,7 @@ const WIDTH_CLASS = {
 };
 
 export function ReaderDrawer({ videoId, onClose }) {
+  const t = useTranslations('ReaderDrawer');
   const [mode, setMode] = useState('half');
   const { data, error, loading } = useVideoData(videoId);
   const open = Boolean(videoId);
@@ -27,14 +29,14 @@ export function ReaderDrawer({ videoId, onClose }) {
   return (
     <Sheet open={open} onOpenChange={(v) => { if (!v) onClose(); }}>
       <SheetContent side="right" className={`flex flex-col gap-0 p-0 ${WIDTH_CLASS[mode]}`}>
-        <DrawerHeader videoId={videoId} data={data} mode={mode} onModeChange={setMode} />
+        <DrawerHeader videoId={videoId} data={data} mode={mode} onModeChange={setMode} t={t} />
 
         {loading && (
           <div className="flex flex-1 items-center justify-center text-muted">
-            <Loader2 size={18} className="mr-2 animate-spin" /> Cargando…
+            <Loader2 size={18} className="mr-2 animate-spin" /> {t('loading')}
           </div>
         )}
-        {error && <div className="p-6 text-sm text-error">No se pudo cargar: {error}</div>}
+        {error && <div className="p-6 text-sm text-error">{t('loadFailed', { error })}</div>}
 
         {data && (
           mode === 'split' ? (
@@ -47,22 +49,22 @@ export function ReaderDrawer({ videoId, onClose }) {
               </div>
             </div>
           ) : (
-            <DrawerTabs data={data} />
+            <DrawerTabs data={data} t={t} />
           )
         )}
 
-        {data && <ActionBar videoId={videoId} data={data} />}
+        {data && <ActionBar videoId={videoId} data={data} t={t} />}
       </SheetContent>
     </Sheet>
   );
 }
 
-function DrawerHeader({ videoId, data, mode, onModeChange }) {
+function DrawerHeader({ videoId, data, mode, onModeChange, t }) {
   return (
     <div className="flex items-start justify-between gap-4 border-b border-border px-6 py-4">
       <div className="min-w-0">
         <h2 className="truncate text-lg font-semibold tracking-tight text-text">
-          {data?.title || 'Cargando…'}
+          {data?.title || t('loading')}
         </h2>
         {videoId && (
           <a
@@ -78,14 +80,14 @@ function DrawerHeader({ videoId, data, mode, onModeChange }) {
       <div className="flex flex-shrink-0 items-center gap-1 pr-8">
         <button
           onClick={() => onModeChange(mode === 'split' ? 'half' : 'split')}
-          title="Vista dividida: YouTube + resumen"
+          title={t('splitViewTitle')}
           className={`rounded-lg p-2 transition-colors ${mode === 'split' ? 'bg-accent text-text' : 'text-muted hover:bg-accent hover:text-text'}`}
         >
           <Columns2 size={16} />
         </button>
         <button
           onClick={() => onModeChange(mode === 'full' ? 'half' : 'full')}
-          title={mode === 'full' ? 'Volver a la mitad' : 'Pantalla completa'}
+          title={mode === 'full' ? t('backToHalf') : t('fullscreen')}
           className={`rounded-lg p-2 transition-colors ${mode === 'full' ? 'bg-accent text-text' : 'text-muted hover:bg-accent hover:text-text'}`}
         >
           {mode === 'full' ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
@@ -95,14 +97,14 @@ function DrawerHeader({ videoId, data, mode, onModeChange }) {
   );
 }
 
-function DrawerTabs({ data }) {
+function DrawerTabs({ data, t }) {
   return (
     <Tabs defaultValue="resumen" className="flex flex-1 flex-col overflow-hidden">
       <TabsList className="mx-6 mt-3 w-fit bg-zinc-100 text-muted">
-        <TabsTrigger value="resumen">Resumen</TabsTrigger>
-        <TabsTrigger value="email">Email</TabsTrigger>
-        <TabsTrigger value="md">.md</TabsTrigger>
-        <TabsTrigger value="transcripcion">Transcripción</TabsTrigger>
+        <TabsTrigger value="resumen">{t('tabSummary')}</TabsTrigger>
+        <TabsTrigger value="email">{t('tabEmail')}</TabsTrigger>
+        <TabsTrigger value="md">{t('tabMarkdown')}</TabsTrigger>
+        <TabsTrigger value="transcripcion">{t('tabTranscript')}</TabsTrigger>
       </TabsList>
 
       <TabsContent value="resumen" className="flex-1 overflow-y-auto p-6">
@@ -113,7 +115,7 @@ function DrawerTabs({ data }) {
         {data.emailHtml ? (
           <iframe title="Email preview" srcDoc={data.emailHtml} className="h-full w-full rounded-xl border border-border" />
         ) : (
-          <p className="text-sm text-muted">Este vídeo todavía no se ha enviado por email.</p>
+          <p className="text-sm text-muted">{t('noEmailYet')}</p>
         )}
       </TabsContent>
 
@@ -138,7 +140,7 @@ function Prose({ children }) {
   );
 }
 
-function ActionBar({ videoId, data }) {
+function ActionBar({ videoId, data, t }) {
   const [sending, setSending] = useState(false);
   const [copied, setCopied] = useState(false);
   const [requeuing, setRequeuing] = useState(false);
@@ -150,9 +152,9 @@ function ActionBar({ videoId, data }) {
     try {
       const res = await fetch(`/api/videos/${videoId}/resend`, { method: 'POST' });
       if (!res.ok) throw new Error(await res.text());
-      setNotice('Email reenviado.');
+      setNotice(t('emailResent'));
     } catch (err) {
-      setNotice(`No se pudo enviar: ${err.message}`);
+      setNotice(t('sendFailed', { error: err.message }));
     } finally {
       setSending(false);
     }
@@ -170,9 +172,9 @@ function ActionBar({ videoId, data }) {
     try {
       const res = await fetch(`/api/videos/${videoId}/requeue`, { method: 'POST' });
       if (!res.ok) throw new Error(await res.text());
-      setNotice('Reencolado — el worker lo recogerá solo.');
+      setNotice(t('requeuedNotice'));
     } catch (err) {
-      setNotice(`No se pudo reprocesar: ${err.message}`);
+      setNotice(t('reprocessFailed', { error: err.message }));
     } finally {
       setRequeuing(false);
     }
@@ -187,20 +189,20 @@ function ActionBar({ videoId, data }) {
           disabled={requeuing}
           className="flex items-center gap-1.5 rounded-xl px-3.5 py-2 text-sm font-medium text-muted transition-colors hover:bg-accent hover:text-text disabled:opacity-60"
         >
-          <RotateCcw size={14} /> Reprocesar
+          <RotateCcw size={14} /> {t('reprocess')}
         </button>
         <button
           onClick={copyMd}
           className="flex items-center gap-1.5 rounded-xl px-3.5 py-2 text-sm font-medium text-muted transition-colors hover:bg-accent hover:text-text"
         >
-          <Copy size={14} /> {copied ? 'Copiado' : 'Copiar .md'}
+          <Copy size={14} /> {copied ? t('copied') : t('copyMd')}
         </button>
         <button
           onClick={sendEmail}
           disabled={sending}
           className="flex items-center gap-1.5 rounded-xl bg-primary px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-zinc-800 disabled:opacity-60"
         >
-          <Send size={14} /> {sending ? 'Enviando…' : 'Enviar email'}
+          <Send size={14} /> {sending ? t('sending') : t('sendEmail')}
         </button>
       </div>
     </div>

@@ -1,8 +1,9 @@
-"use client";
+'use client';
 
 import { useState } from 'react';
+import { useTranslations } from 'next-intl';
 import { Loader2, RotateCcw, Trash2 } from 'lucide-react';
-import { STATIONS, stationClasses, currentLabel, isProcessing } from '../stages.js';
+import { STATIONS, stationClasses, currentLabelKey, isProcessing } from '../stages.js';
 
 const STATION_COLOR = {
   done: 'bg-success',
@@ -25,12 +26,17 @@ function StatusDot({ video, processing }) {
 }
 
 export function VideoCard({ video, onOpenReader }) {
+  const t = useTranslations('VideoCard');
+  const tStageLabel = useTranslations('StageLabel');
   const [requeuing, setRequeuing] = useState(false);
   const [requeued, setRequeued] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [deleted, setDeleted] = useState(false);
   const classes = stationClasses(video);
-  const label = currentLabel(video);
+  const { key: labelKey, failed } = currentLabelKey(video);
+  const label = failed
+    ? tStageLabel('failedSuffix', { stage: tStageLabel(labelKey) })
+    : tStageLabel(labelKey);
   const processing = isProcessing(video);
   const isError = video.bucket === 'error';
 
@@ -41,21 +47,21 @@ export function VideoCard({ video, onOpenReader }) {
       if (!res.ok) throw new Error(await res.text());
       setRequeued(true);
     } catch (err) {
-      alert(`No se pudo reprocesar: ${err.message}`);
+      alert(t('reprocessFailed', { error: err.message }));
     } finally {
       setRequeuing(false);
     }
   }
 
   async function deleteVideo() {
-    if (!confirm(`¿Borrar ${video.videoId} definitivamente? No hay vuelta atrás.`)) return;
+    if (!confirm(t('confirmDelete', { videoId: video.videoId }))) return;
     setDeleting(true);
     try {
       const res = await fetch(`/api/videos/${video.videoId}`, { method: 'DELETE' });
       if (!res.ok) throw new Error(await res.text());
       setDeleted(true);
     } catch (err) {
-      alert(`No se pudo borrar: ${err.message}`);
+      alert(t('deleteFailed', { error: err.message }));
     } finally {
       setDeleting(false);
     }
@@ -104,7 +110,7 @@ export function VideoCard({ video, onOpenReader }) {
           </div>
 
           <div className={video.title ? 'mt-0.5 truncate text-base font-semibold text-text' : 'mt-0.5 text-base italic text-muted'}>
-            {video.title || 'esperando título…'}
+            {video.title || t('pendingTitle')}
           </div>
 
           <div className="mt-1 flex min-w-0 items-center gap-2 text-sm text-muted">
@@ -127,7 +133,7 @@ export function VideoCard({ video, onOpenReader }) {
                 onClick={() => onOpenReader(video.videoId)}
                 className="text-sm text-muted hover:text-text"
               >
-                leer resumen
+                {t('readSummary')}
               </button>
             )}
             {isError && !requeued && (
@@ -137,10 +143,10 @@ export function VideoCard({ video, onOpenReader }) {
                 className="flex items-center gap-1 text-sm text-error hover:text-red-700 disabled:opacity-60"
               >
                 <RotateCcw size={12} />
-                {requeuing ? 'reprocesando…' : 'reprocesar'}
+                {requeuing ? t('reprocessing') : t('reprocess')}
               </button>
             )}
-            {requeued && <span className="text-sm text-success">reprocesando — el worker lo recogerá solo</span>}
+            {requeued && <span className="text-sm text-success">{t('reprocessingNotice')}</span>}
             {isError && (
               <button
                 onClick={deleteVideo}
@@ -148,7 +154,7 @@ export function VideoCard({ video, onOpenReader }) {
                 className="flex items-center gap-1 text-sm text-muted hover:text-text disabled:opacity-60"
               >
                 <Trash2 size={12} />
-                {deleting ? 'borrando…' : 'borrar'}
+                {deleting ? t('deleting') : t('delete')}
               </button>
             )}
           </div>
