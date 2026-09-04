@@ -36,7 +36,7 @@ export function VideoRow({ video }) {
       if (!res.ok) throw new Error(await res.text());
       setRequeued(true);
     } catch (err) {
-      alert(`No se pudo reencolar: ${err.message}`);
+      alert(`No se pudo reprocesar: ${err.message}`);
     } finally {
       setRequeuing(false);
     }
@@ -137,10 +137,10 @@ export function VideoRow({ video }) {
               className="flex items-center gap-1 border-b border-red font-mono text-xs text-red hover:border-red-dark disabled:opacity-60"
             >
               <RotateCcw size={12} />
-              {requeuing ? 'reencolando…' : 'reencolar'}
+              {requeuing ? 'reprocesando…' : 'reprocesar'}
             </button>
           )}
-          {requeued && <span className="font-mono text-xs text-green">reencolado — el worker lo recogerá solo</span>}
+          {requeued && <span className="font-mono text-xs text-green">reprocesando — el worker lo recogerá solo</span>}
           {video.bucket === 'error' && (
             <button
               onClick={deleteVideo}

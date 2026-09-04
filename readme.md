@@ -43,8 +43,8 @@ Con el servidor corriendo, abre la URL que imprime `npm run dev` (o `http://loca
 usaste `npm start`):
 
 - **UI**: pestañas por etapa (Descarga / Resumen IA / Interpretar / Email / Terminado / Error),
-  formulario para encolar con botón de pegar del portapapeles, y botón "reencolar" en las filas
-  que fallaron.
+  formulario para encolar con botón de encolar del portapapeles (un click), y botón "reprocesar"
+  en las filas que fallaron.
 - **API**:
   - `GET /api/state` — la cola completa, con la etapa de cada vídeo derivada en vivo de las
     carpetas (sin base de datos aparte).
