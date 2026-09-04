@@ -482,6 +482,23 @@ class BaseStage {
 // ==========================================================
 // STAGE 0 — PROCESS INPUTS (NUEVO)
 // ==========================================================
+/** Unico sitio que sabe sacar un videoId de una URL de YouTube — estaba duplicado en
+ * ProcessInputsStage y DownloadStage, y ninguna de las dos copias entendia /shorts/{id} (solo
+ * youtu.be/{id} y ?v={id}): un Short encolado se aceptaba como URL valida pero devolvia
+ * videoId=null, y generateDownloadInput lo descartaba mas tarde con un throw que solo se veia en
+ * el log del servidor — la API respondia `enqueued: 0` sin decir por que. */
+function extractVideoId(url) {
+    try {
+        const u = new URL(url);
+        if (u.hostname.includes('youtu.be')) return u.pathname.slice(1);
+        const pathMatch = u.pathname.match(/^\/(shorts|embed|live)\/([^/?]+)/);
+        if (pathMatch) return pathMatch[2];
+        return u.searchParams.get('v');
+    } catch {
+        return null;
+    }
+}
+
 export class ProcessInputsStage extends BaseStage {
     constructor(logger) {
         super({
@@ -495,14 +512,7 @@ export class ProcessInputsStage extends BaseStage {
     }
 
     extractVideoId(url) {
-        try {
-            const u = new URL(url);
-            if (u.hostname.includes('youtu.be')) return u.pathname.slice(1);
-            return u.searchParams.get('v');
-        } catch (error) {
-            console.warn(`   ⚠️ Could not parse URL: ${url}`);
-            return null;
-        }
+        return extractVideoId(url);
     }
 
     isValidUrl(string) {
@@ -826,9 +836,7 @@ export class DownloadStage extends BaseStage {
     }
 
     extractVideoId(url) {
-        const u = new URL(url);
-        if (u.hostname.includes('youtu.be')) return u.pathname.slice(1);
-        return u.searchParams.get('v');
+        return extractVideoId(url);
     }
 
     async fetchTranscriptWithFallback(url) {
