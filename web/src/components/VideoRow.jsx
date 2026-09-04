@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Loader2, RotateCcw, Trash2 } from 'lucide-react';
-import { STATIONS, stationClasses, currentLabel } from '../stages.js';
+import { STATIONS, stationClasses, currentLabel, isProcessing } from '../stages.js';
 
 const STATION_COLOR = {
   done: 'bg-green',
@@ -27,7 +27,7 @@ export function VideoRow({ video }) {
   const [deleted, setDeleted] = useState(false);
   const classes = stationClasses(video);
   const label = currentLabel(video);
-  const isProcessing = video.bucket !== 'error' && video.stage !== 'DONE' && classes.includes('active');
+  const processing = isProcessing(video);
 
   async function requeue() {
     setRequeuing(true);
@@ -62,7 +62,7 @@ export function VideoRow({ video }) {
     <div
       className={
         'grid grid-cols-[92px_1fr] gap-4 border-b border-rule py-4 first:border-t transition-colors ' +
-        (isProcessing ? '-mx-3 px-3 bg-[#f2e6c8]' : '')
+        (processing ? '-mx-3 px-3 bg-[#f2e6c8]' : '')
       }
     >
       <div>
@@ -72,37 +72,53 @@ export function VideoRow({ video }) {
           ))}
         </div>
         <div className={`mt-1.5 flex items-center gap-1 font-mono text-[0.68rem] ${video.bucket === 'error' ? 'text-red' : 'text-ink-dim'}`}>
-          {isProcessing && <Loader2 size={11} className="animate-spin text-amber" />}
+          {processing && <Loader2 size={11} className="animate-spin text-amber" />}
           {label}
         </div>
       </div>
 
-      <div>
-        {video.url ? (
-          <a
-            href={video.url}
-            target="_blank"
-            rel="noreferrer"
-            className="font-mono text-xs text-ink-dim underline decoration-rule hover:decoration-ink hover:text-ink"
-          >
-            {video.url}
-          </a>
-        ) : (
-          <div className="font-mono text-xs text-ink-dim">{video.videoId}</div>
-        )}
-        <div className={video.title ? 'mt-0.5 mb-1' : 'mt-0.5 mb-1 italic text-ink-dim'}>
-          {video.title || 'esperando título…'}
-        </div>
-        {video.language && (
-          <div className="font-mono text-xs text-ink-dim">
-            {video.language}{video.model ? ` · ${video.model}` : ''}
-          </div>
-        )}
-        {video.lastError && (
-          <div className="mt-1.5 border-l-2 border-red pl-2.5 text-sm text-red">{video.lastError.error}</div>
+      <div className="flex gap-3.5">
+        {video.stage === 'DONE' && (
+          // La miniatura la publica el propio YouTube por videoId (img.youtube.com), sin
+          // descargar ni tocar nada del pipeline. hqdefault existe siempre para un video
+          // publico; maxresdefault no (algunos devuelven un placeholder pequeño en su lugar).
+          <img
+            src={`https://img.youtube.com/vi/${video.videoId}/hqdefault.jpg`}
+            alt=""
+            width={112}
+            height={63}
+            loading="lazy"
+            className="h-[63px] w-[112px] flex-shrink-0 border border-rule object-cover"
+            onError={(e) => { e.currentTarget.style.display = 'none'; }}
+          />
         )}
 
-        <div className="mt-2 flex flex-wrap items-center gap-x-3.5 gap-y-1">
+        <div className="min-w-0 flex-1">
+          {video.url ? (
+            <a
+              href={video.url}
+              target="_blank"
+              rel="noreferrer"
+              className="font-mono text-xs text-ink-dim underline decoration-rule hover:decoration-ink hover:text-ink"
+            >
+              {video.url}
+            </a>
+          ) : (
+            <div className="font-mono text-xs text-ink-dim">{video.videoId}</div>
+          )}
+          <div className={video.title ? 'mt-0.5 mb-1' : 'mt-0.5 mb-1 italic text-ink-dim'}>
+            {video.title || 'esperando título…'}
+          </div>
+          {video.language && (
+            <div className="font-mono text-xs text-ink-dim">
+              {video.language}{video.model ? ` · ${video.model}` : ''}
+            </div>
+          )}
+          {video.lastError && (
+            <div className="mt-1.5 border-l-2 border-red pl-2.5 text-sm text-red">{video.lastError.error}</div>
+          )}
+
+          <div className="mt-2 flex flex-wrap items-center gap-x-3.5 gap-y-1">
           {links(video).map(([label, href]) => (
             <a
               key={label}
@@ -135,6 +151,7 @@ export function VideoRow({ video }) {
               {deleting ? 'borrando…' : 'borrar'}
             </button>
           )}
+          </div>
         </div>
       </div>
     </div>

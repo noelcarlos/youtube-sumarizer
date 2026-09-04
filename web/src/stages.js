@@ -35,6 +35,10 @@ export function stationClasses(video) {
   });
 }
 
+export function isProcessing(video) {
+  return video.bucket !== 'error' && video.stage !== 'DONE' && stationClasses(video).includes('active');
+}
+
 export function currentLabel(video) {
   if (video.stage === 'DONE') return 'enviado';
   const base = STATION_LABEL[video.stage] || video.stage.toLowerCase();
