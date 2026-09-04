@@ -360,6 +360,9 @@ export function createAiClient(provider, overrides = {}) {
  * en prosa) — fuera quedaron los de traduccion (riva-translate), moderacion/content-safety
  * (nemoguard, safety-guard), calculo cientifico (ising-calibration) y generacion de imagenes
  * (diffusiongemma): ninguno de esos escribe un resumen aunque respondan bien a cualquier prompt.
+ * `poolside/laguna-xs-2.1` se probo aparte con un resumen real en español (no solo el hello
+ * world de la primera pasada) y SI escribe prosa fluida — que Poolside sea conocida por modelos
+ * de codigo no significa que este lo sea, habia que probarlo antes de sacarlo, no asumir.
  * `nemotron-3.5-lightning` se queda aunque ahora mismo de timeout/504 (ver conversacion) — es el
  * modelo principal del proyecto, un fallo puntual de NVIDIA no significa que haya que sacarlo. Si
  * NVIDIA habilita mas modelos para esta cuenta mas adelante, hay que volver a probar y revisar
@@ -372,6 +375,7 @@ const NVIDIA_WORKING_MODELS = new Set([
     'nvidia/nemotron-3-super-120b-a12b',
     'nvidia/nemotron-3-ultra-550b-a55b',
     'nvidia/nemotron-3.5-lightning-30b-a3b',
+    'poolside/laguna-xs-2.1',
     'openai/gpt-oss-20b',
 ]);
 
