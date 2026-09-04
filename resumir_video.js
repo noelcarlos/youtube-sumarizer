@@ -352,6 +352,33 @@ export function createAiClient(provider, overrides = {}) {
     }
 }
 
+/** El catalogo de NVIDIA lista 81 modelos, pero la cuenta de esta API key solo tiene acceso
+ * real a un puñado — el resto responde 404 "Function not found for account" (no es que esten
+ * caidos, es que no estan habilitados para esta cuenta) o directamente no son modelos de chat
+ * (embeddings, traduccion, vision-only, content-safety). Se probaron los 81 el 2026-09-04
+ * mandando "crea un hello world en Java" con timeout de 3 min cada uno; esta es la lista de los
+ * que SI contestaron algo. Si NVIDIA habilita mas adelante otros modelos para esta cuenta, hay
+ * que volver a correr esa prueba y actualizar esta lista a mano — no hay forma de saber desde
+ * la API cuales estan habilitados sin probarlos uno a uno. */
+const NVIDIA_WORKING_MODELS = new Set([
+    'google/diffusiongemma-26b-a4b-it',
+    'meta/llama-3.2-11b-vision-instruct',
+    'minimaxai/minimax-m3',
+    'moonshotai/kimi-k3',
+    'nvidia/ising-calibration-1.5-31b',
+    'nvidia/llama-3.1-nemoguard-8b-content-safety',
+    'nvidia/llama-3.1-nemotron-safety-guard-8b-v3',
+    'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning',
+    'nvidia/nemotron-3-super-120b-a12b',
+    'nvidia/nemotron-3-ultra-550b-a55b',
+    'nvidia/nemotron-3.5-content-safety',
+    'nvidia/nemotron-3.5-lightning-30b-a3b',
+    'nvidia/riva-translate-4b-instruct-v1.1',
+    'nvidia/riva-translate-4b-instruct-v2',
+    'openai/gpt-oss-20b',
+    'poolside/laguna-xs-2.1',
+]);
+
 /** Lista real de modelos que ofrece CADA proveedor, para el combo de Settings — nada
  * hardcodeado, porque un catalogo estatico se queda obsoleto en cuanto el proveedor sube un
  * modelo nuevo (o en LMStudio, en cuanto el usuario carga uno distinto en su propio servidor).
@@ -367,7 +394,7 @@ export async function listModels(provider, overrides = {}) {
         case 'nvidia': {
             const client = new OpenAI({ apiKey: requireKey(overrides.apiKey || NVIDIA_API_KEY, provider, 'NVIDIA_API_KEY'), baseURL: overrides.baseUrl || NVIDIA_BASE_URL });
             const list = await client.models.list();
-            return list.data.map(m => m.id).sort();
+            return list.data.map(m => m.id).filter(id => NVIDIA_WORKING_MODELS.has(id)).sort();
         }
         case 'deepseek': {
             const client = new OpenAI({ apiKey: requireKey(overrides.apiKey || DEEPSEEK_API_KEY, provider, 'DEEPSEEK_API_KEY'), baseURL: overrides.baseUrl || DEEPSEEK_BASE_URL });
