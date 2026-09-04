@@ -16,7 +16,7 @@ function links(v) {
     out.push(['ver email', `/api/videos/${v.videoId}/email`]);
     out.push(['.md', `/api/videos/${v.videoId}/markdown`]);
   }
-  if (v.url) out.push(['youtube ↗', v.url]);
+  // el enlace a youtube ya sale arriba, junto al titulo — no lo repetimos aqui.
   return out;
 }
 
@@ -53,7 +53,18 @@ export function VideoRow({ video }) {
       </div>
 
       <div>
-        <div className="font-mono text-xs text-ink-dim">{video.videoId}</div>
+        {video.url ? (
+          <a
+            href={video.url}
+            target="_blank"
+            rel="noreferrer"
+            className="font-mono text-xs text-ink-dim underline decoration-rule hover:decoration-ink hover:text-ink"
+          >
+            {video.url}
+          </a>
+        ) : (
+          <div className="font-mono text-xs text-ink-dim">{video.videoId}</div>
+        )}
         <div className={video.title ? 'mt-0.5 mb-1' : 'mt-0.5 mb-1 italic text-ink-dim'}>
           {video.title || 'esperando título…'}
         </div>

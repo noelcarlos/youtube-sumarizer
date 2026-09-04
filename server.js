@@ -146,6 +146,14 @@ async function enrichVideo(v) {
         path.join(DIRS.INTERPRET_SUMMARY.OUTPUT, `${v.videoId}.enriched.json`),
         path.join(DIRS.INTERPRET_SUMMARY.INPUT, `${v.videoId}.ai.raw.json`),
         path.join(DIRS.AI_SUMMARIZE.OUTPUT, `${v.videoId}.ai.raw.json`),
+        // Estos ultimos no tienen title/language (aun no ha pasado por el modelo), pero SI tienen
+        // `url` desde el principio — es el job normalizado que genero ProcessInputsStage. Sin esto,
+        // un video que falla en la descarga (antes de que exista ningun .ai.raw.json) se queda sin
+        // URL en la UI, que es justo el caso en el que mas hace falta poder pinchar en el enlace.
+        path.join(DIRS.AI_SUMMARIZE.INPUT, `${v.videoId}.json`),
+        path.join(DIRS.AI_SUMMARIZE.ERROR, `${v.videoId}.json`),
+        path.join(DIRS.DOWNLOAD.INPUT, `${v.videoId}.json`),
+        path.join(DIRS.DOWNLOAD.ERROR, `${v.videoId}.json`),
     ];
     for (const p of candidates) {
         try {
