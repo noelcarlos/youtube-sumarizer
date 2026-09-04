@@ -9,14 +9,8 @@ const STATION_COLOR = {
   pending: 'bg-zinc-200',
 };
 
-function links(v) {
-  const out = [];
-  if (v.stage === 'DONE' || (v.stage === 'EMAIL' && v.bucket === 'output')) {
-    out.push(['leer resumen', `/api/videos/${v.videoId}/reader`]);
-    out.push(['ver email', `/api/videos/${v.videoId}/email`]);
-    out.push(['.md', `/api/videos/${v.videoId}/markdown`]);
-  }
-  return out;
+function canOpenReader(v) {
+  return v.stage === 'DONE' || (v.stage === 'EMAIL' && v.bucket === 'output');
 }
 
 /** verde para enviado, rojo para fallo, ambar mientras esta activo, gris mientras espera turno. */
@@ -28,7 +22,7 @@ function StatusDot({ video, processing }) {
   return <span className={`inline-block h-1.5 w-1.5 rounded-full ${color}`} />;
 }
 
-export function VideoCard({ video }) {
+export function VideoCard({ video, onOpenReader }) {
   const [requeuing, setRequeuing] = useState(false);
   const [requeued, setRequeued] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -126,17 +120,14 @@ export function VideoCard({ video }) {
           )}
 
           <div className="mt-2.5 flex flex-wrap items-center gap-x-4 gap-y-1">
-            {links(video).map(([label, href]) => (
-              <a
-                key={label}
-                href={href}
-                target="_blank"
-                rel="noreferrer"
+            {canOpenReader(video) && (
+              <button
+                onClick={() => onOpenReader(video.videoId)}
                 className="text-sm text-muted hover:text-text"
               >
-                {label}
-              </a>
-            ))}
+                leer resumen
+              </button>
+            )}
             {isError && !requeued && (
               <button
                 onClick={requeue}

@@ -14,9 +14,11 @@ import http from 'node:http';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { marked } from 'marked';
+import nodemailer from 'nodemailer';
 import {
     DIRS, initDirs, EventLogger, moveOutputs, runStageWorker, createAiClient,
     ProcessInputsStage, DownloadStage, AiSummarizeStage, InterpretSummaryStage, EmailStage,
+    EMAIL_USER, EMAIL_PASS, EMAIL_TO, EMAIL_BCC,
 } from './resumir_video.js';
 
 // 4173 es el default de iron-agile-bot (server/src/index.js) — con los dos corriendo a la vez
@@ -322,6 +324,33 @@ async function deleteVideo(videoId) {
     return { stage: v.stage, files };
 }
 
+const emailTransporter = nodemailer.createTransport({
+    service: 'gmail',
+    auth: { user: EMAIL_USER, pass: EMAIL_PASS },
+});
+
+/** Botón "Enviar email" del drawer: reenvía el `.email.html` YA generado, tal cual, sin
+ * reconstruirlo — el pipeline ya hizo ese trabajo una vez; esto solo repite el envío (por ejemplo,
+ * si se perdió o el destinatario lo borró por error). */
+async function resendEmail(videoId) {
+    const html = await readFirstExisting([
+        path.join(DIRS.DONE, `${videoId}.email.html`),
+        path.join(DIRS.EMAIL.OUTPUT, `${videoId}.email.html`),
+    ]);
+    if (html === null) {
+        throw Object.assign(new Error(`${videoId} no tiene un email.html generado todavia`), { status: 404 });
+    }
+    const titleMatch = html.match(/<title>([^<]*)<\/title>|<h1>([^<]*)<\/h1>/i);
+    const title = titleMatch ? (titleMatch[1] || titleMatch[2]) : videoId;
+    await emailTransporter.sendMail({
+        from: EMAIL_USER,
+        to: EMAIL_TO,
+        bcc: EMAIL_BCC,
+        subject: `[SUMMARY] ${title}`,
+        html,
+    });
+}
+
 const server = http.createServer(async (req, res) => {
     try {
         const url = new URL(req.url, `http://localhost:${PORT}`);
@@ -341,6 +370,36 @@ const server = http.createServer(async (req, res) => {
             const parts = url.pathname.split('/'); // ['', 'api', 'videos', ':id', ':kind']
             const videoId = parts[3];
             const kind = parts[4];
+
+            if (kind === 'data') {
+                // Todo lo que necesita el drawer de lectura en una sola llamada: el resumen corto
+                // (pestana "Resumen"), la reescritura fiel completa (pestana "Transcripcion"), el
+                // email tal cual se envio, y el .md crudo — sin renderizar nada aqui, eso lo hace
+                // react-markdown en el cliente para poder montar las 4 pestanas sin 4 peticiones.
+                const enrichedRaw = await readFirstExisting([
+                    path.join(DIRS.DONE, `${videoId}.enriched.json`),
+                    path.join(DIRS.EMAIL.OUTPUT, `${videoId}.enriched.json`),
+                    path.join(DIRS.EMAIL.INPUT, `${videoId}.enriched.json`),
+                    path.join(DIRS.INTERPRET_SUMMARY.OUTPUT, `${videoId}.enriched.json`),
+                ]);
+                if (enrichedRaw === null) { res.writeHead(404).end('enriched.json no encontrado todavia'); return; }
+                const enriched = JSON.parse(enrichedRaw);
+                const emailHtml = await readFirstExisting([
+                    path.join(DIRS.DONE, `${videoId}.email.html`),
+                    path.join(DIRS.EMAIL.OUTPUT, `${videoId}.email.html`),
+                ]);
+                return sendJson(res, 200, {
+                    videoId,
+                    url: enriched.url || `https://www.youtube.com/watch?v=${videoId}`,
+                    title: enriched.title || null,
+                    language: enriched.language || null,
+                    model: enriched.model || null,
+                    summaryBody: enriched.summaryBody || '',
+                    fullContent: enriched.fullContent || '',
+                    markdown: enriched.markdown || '',
+                    emailHtml, // null si aun no se ha enviado
+                });
+            }
 
             if (kind === 'reader') {
                 const md = await readFirstExisting([
@@ -377,7 +436,7 @@ const server = http.createServer(async (req, res) => {
                 return;
             }
 
-            res.writeHead(404).end('kind desconocido: usa reader, email o markdown');
+            res.writeHead(404).end('kind desconocido: usa data, reader, email o markdown');
             return;
         }
 
@@ -386,6 +445,16 @@ const server = http.createServer(async (req, res) => {
             try {
                 const result = await requeueVideo(videoId);
                 return sendJson(res, 200, { requeued: videoId, ...result });
+            } catch (err) {
+                return sendJson(res, err.status || 500, { error: err.message });
+            }
+        }
+
+        if (req.method === 'POST' && url.pathname.startsWith('/api/videos/') && url.pathname.endsWith('/resend')) {
+            const videoId = url.pathname.split('/')[3];
+            try {
+                await resendEmail(videoId);
+                return sendJson(res, 200, { resent: videoId });
             } catch (err) {
                 return sendJson(res, err.status || 500, { error: err.message });
             }

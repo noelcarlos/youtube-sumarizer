@@ -110,12 +110,15 @@ const LMSTUDIO_TIMEOUT_MS = 30 * 60 * 1000; // 30 min, local models can be slow 
 const LMSTUDIO_MODEL_NAME = process.env.LMSTUDIO_MODEL || "Qwen3.6-35B-A3B-oQ4e-mtp";
 
 // --- EMAIL CONFIG ---
-const EMAIL_USER = "david.rey.1040@gmail.com";
-const EMAIL_PASS = process.env.EMAIL_PASS;
-const EMAIL_TO = "noel.carlos@gmail.com";
+// Exportadas para que server.js pueda montar su propio transporter y reenviar un email ya
+// generado (boton "Enviar email" del drawer) sin tener que pasar por todo EmailStage, que asume
+// que el video esta en email/input, no ya en done/.
+export const EMAIL_USER = "david.rey.1040@gmail.com";
+export const EMAIL_PASS = process.env.EMAIL_PASS;
+export const EMAIL_TO = "noel.carlos@gmail.com";
 //const EMAIL_BCC = "kl2053258@gmail.com";
 //const EMAIL_BCC = "kl2053258@gmail.com,manuelvargash95@gmail.com";
-const EMAIL_BCC = "";
+export const EMAIL_BCC = "";
 const OVERRIDE_LANG = null; //"Español"; // Set to null to auto-detect
 
 // ==========================================================

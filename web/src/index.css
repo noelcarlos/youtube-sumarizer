@@ -21,6 +21,26 @@
 
   --shadow-soft: 0 1px 2px rgba(0, 0, 0, 0.04);
   --shadow-hover: 0 4px 12px rgba(0, 0, 0, 0.06);
+
+  /* Set estandar de shadcn/ui (los componentes generados por `shadcn add` esperan estos nombres
+   * exactos: bg-background, text-foreground, bg-popover, etc.) — puenteado a la misma paleta zinc
+   * de arriba en vez de duplicar valores sueltos, para que los dos sistemas queden consistentes. */
+  --color-background: var(--color-bg);
+  --color-foreground: var(--color-text);
+  --color-card-foreground: var(--color-text);
+  --color-popover: var(--color-card);
+  --color-popover-foreground: var(--color-text);
+  --color-primary-foreground: #fafafa;
+  --color-secondary: #f4f4f5;
+  --color-secondary-foreground: var(--color-text);
+  --color-muted-foreground: var(--color-muted);
+  --color-accent: #f4f4f5;
+  --color-accent-foreground: var(--color-text);
+  --color-destructive: var(--color-error);
+  --color-destructive-foreground: #fafafa;
+  --color-input: var(--color-border);
+  --color-ring: #a1a1aa;
+  --radius: 0.75rem;
 }
 
 body {
