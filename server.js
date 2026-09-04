@@ -245,7 +245,14 @@ async function serveStatic(res, pathname) {
     }
 
     const ext = path.extname(filePath.pathname);
-    res.writeHead(200, { 'Content-Type': CONTENT_TYPES[ext] || 'application/octet-stream' });
+    const isIndexHtml = filePath.pathname.endsWith('/index.html');
+    // index.html cambia de contenido en cada build SIN cambiar de nombre (referencia los assets
+    // por su nombre con hash), asi que si el navegador lo cachea, se queda mirando para siempre
+    // los assets de un build viejo aunque haya uno nuevo en disco - exactamente lo que paso aqui.
+    // Los assets con hash (index-XXXX.js/.css) si son seguros de cachear fuerte: si cambia el
+    // contenido, cambia el nombre del fichero.
+    const cacheControl = isIndexHtml ? 'no-cache' : 'public, max-age=31536000, immutable';
+    res.writeHead(200, { 'Content-Type': CONTENT_TYPES[ext] || 'application/octet-stream', 'Cache-Control': cacheControl });
     res.end(data);
     return true;
 }
@@ -269,6 +276,22 @@ async function requeueVideo(videoId) {
     const dirs = DIRS[v.stage];
     const files = (await listDir(dirs.ERROR)).filter(f => videoIdFromFilename(f) === videoId);
     await Promise.all(files.map(f => fs.rename(path.join(dirs.ERROR, f), path.join(dirs.INPUT, f))));
+    return { stage: v.stage, files };
+}
+
+/** Borra definitivamente un video que esta en error/ — para lo que reencolar no va a arreglar
+ * nunca (un video privado, borrado, o con la region bloqueada en YouTube: yt-dlp va a fallar
+ * exactamente igual la proxima vez). Solo se puede borrar desde error/, la misma cautela que
+ * requeueVideo: nunca se toca un video que este en curso o ya terminado. */
+async function deleteVideo(videoId) {
+    const state = await buildState();
+    const v = state.find(x => x.videoId === videoId);
+    if (!v) throw Object.assign(new Error(`no se encuentra ${videoId} en ninguna cola`), { status: 404 });
+    if (v.bucket !== 'error') throw Object.assign(new Error(`${videoId} no esta en error (esta en ${v.stage}/${v.bucket}) — no se puede borrar desde aqui`), { status: 409 });
+
+    const dirs = DIRS[v.stage];
+    const files = (await listDir(dirs.ERROR)).filter(f => videoIdFromFilename(f) === videoId);
+    await Promise.all(files.map(f => fs.unlink(path.join(dirs.ERROR, f))));
     return { stage: v.stage, files };
 }
 
@@ -336,6 +359,16 @@ const server = http.createServer(async (req, res) => {
             try {
                 const result = await requeueVideo(videoId);
                 return sendJson(res, 200, { requeued: videoId, ...result });
+            } catch (err) {
+                return sendJson(res, err.status || 500, { error: err.message });
+            }
+        }
+
+        if (req.method === 'DELETE' && url.pathname.startsWith('/api/videos/')) {
+            const videoId = url.pathname.split('/')[3];
+            try {
+                const result = await deleteVideo(videoId);
+                return sendJson(res, 200, { deleted: videoId, ...result });
             } catch (err) {
                 return sendJson(res, err.status || 500, { error: err.message });
             }

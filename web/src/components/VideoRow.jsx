@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { RotateCcw } from 'lucide-react';
+import { Loader2, RotateCcw, Trash2 } from 'lucide-react';
 import { STATIONS, stationClasses, currentLabel } from '../stages.js';
 
 const STATION_COLOR = {
@@ -23,8 +23,11 @@ function links(v) {
 export function VideoRow({ video }) {
   const [requeuing, setRequeuing] = useState(false);
   const [requeued, setRequeued] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [deleted, setDeleted] = useState(false);
   const classes = stationClasses(video);
   const label = currentLabel(video);
+  const isProcessing = video.bucket !== 'error' && video.stage !== 'DONE' && classes.includes('active');
 
   async function requeue() {
     setRequeuing(true);
@@ -39,15 +42,37 @@ export function VideoRow({ video }) {
     }
   }
 
+  async function deleteVideo() {
+    if (!confirm(`¿Borrar ${video.videoId} definitivamente? No hay vuelta atrás.`)) return;
+    setDeleting(true);
+    try {
+      const res = await fetch(`/api/videos/${video.videoId}`, { method: 'DELETE' });
+      if (!res.ok) throw new Error(await res.text());
+      setDeleted(true);
+    } catch (err) {
+      alert(`No se pudo borrar: ${err.message}`);
+    } finally {
+      setDeleting(false);
+    }
+  }
+
+  if (deleted) return null;
+
   return (
-    <div className="grid grid-cols-[92px_1fr] gap-4 border-b border-rule py-4 first:border-t">
+    <div
+      className={
+        'grid grid-cols-[92px_1fr] gap-4 border-b border-rule py-4 first:border-t transition-colors ' +
+        (isProcessing ? '-mx-3 px-3 bg-[#f2e6c8]' : '')
+      }
+    >
       <div>
         <div className="flex gap-[3px]">
           {STATIONS.map((s, i) => (
             <div key={s} className={`h-[5px] flex-1 transition-colors duration-200 ${STATION_COLOR[classes[i]]}`} />
           ))}
         </div>
-        <div className={`mt-1.5 font-mono text-[0.68rem] ${video.bucket === 'error' ? 'text-red' : 'text-ink-dim'}`}>
+        <div className={`mt-1.5 flex items-center gap-1 font-mono text-[0.68rem] ${video.bucket === 'error' ? 'text-red' : 'text-ink-dim'}`}>
+          {isProcessing && <Loader2 size={11} className="animate-spin text-amber" />}
           {label}
         </div>
       </div>
@@ -100,6 +125,16 @@ export function VideoRow({ video }) {
             </button>
           )}
           {requeued && <span className="font-mono text-xs text-green">reencolado — el worker lo recogerá solo</span>}
+          {video.bucket === 'error' && (
+            <button
+              onClick={deleteVideo}
+              disabled={deleting}
+              className="flex items-center gap-1 border-b border-ink-dim font-mono text-xs text-ink-dim hover:border-ink hover:text-ink disabled:opacity-60"
+            >
+              <Trash2 size={12} />
+              {deleting ? 'borrando…' : 'borrar'}
+            </button>
+          )}
         </div>
       </div>
     </div>
