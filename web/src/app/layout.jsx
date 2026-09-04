@@ -2,6 +2,7 @@ import { Inter, JetBrains_Mono } from 'next/font/google';
 import { NextIntlClientProvider } from 'next-intl';
 import { getLocale } from 'next-intl/server';
 import { ThemeProvider } from '../components/ThemeProvider.jsx';
+import { AuthProvider } from '../components/AuthProvider.jsx';
 import './globals.css';
 
 // next/font en vez del <link> a Google Fonts que usaba web/index.html con Vite: descarga las
@@ -26,7 +27,9 @@ export default async function RootLayout({ children }) {
             contexto de React atraviesa ese limite sin problema, solo se desactiva el renderizado
             en servidor de ESE componente en concreto. */}
         <ThemeProvider attribute="class" defaultTheme="system" enableSystem>
-          <NextIntlClientProvider>{children}</NextIntlClientProvider>
+          <NextIntlClientProvider>
+            <AuthProvider>{children}</AuthProvider>
+          </NextIntlClientProvider>
         </ThemeProvider>
       </body>
     </html>

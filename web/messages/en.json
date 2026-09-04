@@ -115,5 +115,20 @@
     "emailBcc": "BCC",
     "emailBccPlaceholder": "optional, comma-separated",
     "emailSenderNote": "The sender address and its app password stay fixed in .env for security — only the recipient is editable here."
+  },
+  "SubscriptionsDrawer": {
+    "title": "Subscriptions",
+    "openTitle": "YouTube subscriptions",
+    "loading": "Loading…",
+    "connectIntro": "Connect your YouTube account to see recent videos from your subscribed channels.",
+    "reauthNeeded": "The YouTube connection expired — reconnecting is needed.",
+    "connect": "Connect with YouTube",
+    "disconnect": "Disconnect",
+    "refresh": "Refresh",
+    "subscriptionsIntro": "Recent videos from your subscribed channels.",
+    "empty": "No recent videos found in your subscriptions.",
+    "enqueue": "Enqueue",
+    "enqueued": "Enqueued",
+    "enqueueFailed": "Couldn't enqueue: {error}"
   }
 }

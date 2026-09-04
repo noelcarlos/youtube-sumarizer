@@ -11,6 +11,7 @@ import { ReaderDrawer } from '../components/ReaderDrawer.jsx';
 import { LanguageSwitcher } from '../components/LanguageSwitcher.jsx';
 import { ThemeToggle } from '../components/ThemeToggle.jsx';
 import { SettingsDrawer } from '../components/SettingsDrawer.jsx';
+import { SubscriptionsDrawer } from '../components/SubscriptionsDrawer.jsx';
 import { matchesTab, isProcessing } from '../stages.js';
 
 export function Queue() {
@@ -34,6 +35,7 @@ export function Queue() {
             <Clock />
             <ThemeToggle />
             <LanguageSwitcher />
+            <SubscriptionsDrawer />
             <SettingsDrawer />
           </div>
         </div>

@@ -115,5 +115,20 @@
     "emailBcc": "Copia oculta (BCC)",
     "emailBccPlaceholder": "opcional, separado por comas",
     "emailSenderNote": "El remitente y su contraseña de aplicación siguen fijados en .env por seguridad — solo el destinatario se edita aquí."
+  },
+  "SubscriptionsDrawer": {
+    "title": "Suscripciones",
+    "openTitle": "Suscripciones de YouTube",
+    "loading": "Cargando…",
+    "connectIntro": "Conecta tu cuenta de YouTube para ver los vídeos recientes de tus canales suscritos.",
+    "reauthNeeded": "La conexión con YouTube caducó — hace falta reconectar.",
+    "connect": "Conectar con YouTube",
+    "disconnect": "Desconectar",
+    "refresh": "Actualizar",
+    "subscriptionsIntro": "Últimos vídeos de tus canales suscritos.",
+    "empty": "No se encontraron vídeos recientes en tus suscripciones.",
+    "enqueue": "Encolar",
+    "enqueued": "Encolado",
+    "enqueueFailed": "No se pudo encolar: {error}"
   }
 }
