@@ -47,16 +47,25 @@ export const DIRS = {
     },
 
     // ======================================================
-    // STAGE 2A — AI SUMMARIZE
+    // STAGE 2A — SUMMARIZE (resumen corto) y STAGE 2B — REWRITE (reescritura/traduccion
+    // completa) — dos etapas hermanas, no una detras de otra: las dos leen el MISMO
+    // download/output (DownloadStage las reparte a ambas, ver fanOutOutputs) y pueden usar
+    // modelos de IA distintos, corriendo en paralelo de verdad porque ninguna espera a la otra.
+    // InterpretSummary (mas abajo) es la que junta las dos mitades antes de seguir.
     // ======================================================
-    AI_SUMMARIZE: {
-        INPUT: path.join(BASE, 'ai-summarize/input'),
-        OUTPUT: path.join(BASE, 'ai-summarize/output'),
-        ERROR: path.join(BASE, 'ai-summarize/error')
+    SUMMARIZE: {
+        INPUT: path.join(BASE, 'summarize/input'),
+        OUTPUT: path.join(BASE, 'summarize/output'),
+        ERROR: path.join(BASE, 'summarize/error')
+    },
+    REWRITE: {
+        INPUT: path.join(BASE, 'rewrite/input'),
+        OUTPUT: path.join(BASE, 'rewrite/output'),
+        ERROR: path.join(BASE, 'rewrite/error')
     },
 
     // ======================================================
-    // STAGE 2B — INTERPRET SUMMARY
+    // STAGE 2C — INTERPRET SUMMARY (junta resumen + reescritura)
     // ======================================================
     INTERPRET_SUMMARY: {
         INPUT: path.join(BASE, 'interpret-summary/input'),
@@ -1208,21 +1217,152 @@ function extractVideoIdFromPath(filePath) {
     return base.split('.')[0];
 }
 
-export class AiSummarizeStage extends BaseStage {
+/** Base compartida por SummarizeStage y RewriteStage: las dos hacen una sola llamada (o una
+ * serie de llamadas, en el caso de RewriteStage) a SU PROPIO aiClient, y las dos necesitan el
+ * mismo rastreo de progreso/cancelacion en vivo — currentJob es lo que server.js lee para
+ * /api/state y para el boton de cancelar. Se pisa entero (no se acumula) cada vez que execute()
+ * arranca un fichero nuevo, y se limpia SIEMPRE al salir (exito, error o cancelacion). */
+class AiJobStage extends BaseStage {
+    constructor(opts, aiClient) {
+        super(opts);
+        this.aiClient = aiClient;
+        this.currentJob = null;
+    }
+
+    startJob(videoId, fileSizeBytes, step) {
+        this.currentJob = {
+            videoId,
+            step,
+            currentChunk: 0,
+            totalChunks: 0,
+            fileSizeBytes,
+            startedAt: Date.now(),
+            abortController: new AbortController(),
+        };
+    }
+
+    /** El SDK de OpenAI no pone err.name a "APIUserAbortError" de verdad (se queda en el "Error"
+     * por defecto que hereda de la clase base) — la unica forma fiable de saber si esto vino de
+     * pulsar "cancelar" es mirar la señal que NOSOTROS controlamos, no adivinar la forma del
+     * error. Si esta aborted, es el usuario, no un fallo real. */
+    wasCancelled() {
+        return this.currentJob?.abortController.signal.aborted ?? false;
+    }
+}
+
+export class SummarizeStage extends AiJobStage {
     constructor(aiClient, logger) {
         super({
-            name: 'AI Summarize',
-            inputDir: DIRS.AI_SUMMARIZE.INPUT,
-            outputDir: DIRS.AI_SUMMARIZE.OUTPUT,
-            errorDir: DIRS.AI_SUMMARIZE.ERROR,
+            name: 'Summarize',
+            inputDir: DIRS.SUMMARIZE.INPUT,
+            outputDir: DIRS.SUMMARIZE.OUTPUT,
+            errorDir: DIRS.SUMMARIZE.ERROR,
             logger
-        });
-        this.aiClient = aiClient;
-        // Progreso EN VIVO del video que se esta procesando ahora mismo, para que server.js lo
-        // exponga en /api/state — sin esto, la UI no puede distinguir "este es el que de verdad
-        // esta corriendo" de "estos otros 3 solo estan esperando su turno en la misma carpeta".
-        // Se pisa entero (no se acumula) cada vez que execute() arranca un fichero nuevo.
-        this.currentJob = null;
+        }, aiClient);
+    }
+
+    // Two short scalar fields on their own lines, then the prose as the rest of the message. The
+    // summary is Markdown with headings, bullets and quotes, so it cannot live inside a JSON
+    // string without flawless escaping. Here the scalars are trivially parseable and the prose
+    // needs no parsing at all.
+    //
+    // Note there is deliberately no "model_used" field. It used to be requested, and the skeleton
+    // in this very prompt showed it pre-filled as "deepseek" — which the model dutifully copied,
+    // so every summary reported "deepseek" no matter what actually ran. The real model name is
+    // already known in code and does not need to round-trip through the model.
+    buildPrompt(transcript) {
+        return `
+            You are an expert analyst. Read the transcript at the end of this message and produce a
+            structured summary of it.
+
+            ### OUTPUT FORMAT — follow this EXACTLY
+            Line 1: TITLE: followed by the most likely video title, inferred strictly from the transcript.
+            Line 2: LANGUAGE: followed by the transcript's original language in English (e.g. Spanish, English, French).
+            Line 3: the marker SUMMARY: on a line of its own.
+            Everything after that marker: the summary itself, as free-form Markdown.
+
+            Emit nothing before TITLE: and nothing after the summary. No JSON, no code fences, no commentary.
+
+            ### SUMMARY REQUIREMENTS
+            - Be exhaustive and strictly grounded in the transcript. Do NOT invent, assume, or add
+              outside information, and do NOT draw conclusions the speaker does not state.
+            - Cover the key points, main arguments and explicit conclusions.
+            - Use Markdown headings, bullet lists and **bold** for readability. Quotes and any
+              punctuation you need are fine — this is plain Markdown, not a quoted string.
+            - ${OVERRIDE_LANG
+                ? `Write in ${OVERRIDE_LANG}.`
+                : `Write in the same language as the transcript. Do NOT translate.`}
+
+            ### EXAMPLE SHAPE
+            TITLE: The title inferred from the transcript
+            LANGUAGE: Spanish
+            SUMMARY:
+            ## First theme
+
+            - A key point the speaker actually makes.
+
+            TRANSCRIPT:
+            ---
+            ${transcript}
+            ---
+            `;
+    }
+
+    async execute(filePath) {
+        const videoId = extractVideoIdFromPath(filePath);
+        const fileSizeBytes = await fs.stat(filePath).then(s => s.size).catch(() => 0);
+        this.startJob(videoId, fileSizeBytes, 'summary');
+
+        const fileStart = Date.now();
+        try {
+            console.log(`   Processing: ${filePath}...`);
+
+            const content = await fs.readFile(filePath, 'utf-8');
+            const data = JSON5.parse(content);
+
+            if (data.videoId && data.videoId !== videoId) {
+                console.warn(`⚠️ videoId mismatch: filename=${videoId}, json=${data.videoId}`);
+            }
+
+            const prompt = this.buildPrompt(data.transcript);
+            const { client, model, rawContent } = await this.aiClient.generateContent(prompt, this.currentJob.abortController.signal);
+
+            // Se guarda TODO lo que trajo download/output (incluido el transcript) para que
+            // InterpretSummary tenga de donde tirar despues de juntar las dos mitades — es la
+            // misma duplicacion que ya existia antes de separar esta etapa en dos.
+            const summaryPart = {
+                ...data,
+                summaryModel: model,
+                summaryClient: client,
+                summaryDate: new Date().toISOString(),
+                rawContent,
+            };
+
+            const outPath = path.join(this.outputDir, `${videoId}.summary-part.json`);
+            await fs.writeFile(outPath, JSON.stringify(summaryPart, null, 2));
+            await this.logSuccess([filePath], [outPath]);
+
+            console.log(`   🏁 ${videoId} (resumen) completado en ${Math.round((Date.now() - fileStart) / 1000)}s`);
+        } catch (err) {
+            const wasCancelled = this.wasCancelled();
+            const reported = wasCancelled ? new Error('Cancelado por el usuario') : err;
+            console.error(`   ${wasCancelled ? '🛑' : '❌'} ${wasCancelled ? 'Cancelado' : 'Error resumiendo'} ${filePath}: ${err.message}`);
+            await this.moveToError([filePath], reported);
+        } finally {
+            this.currentJob = null;
+        }
+    }
+}
+
+export class RewriteStage extends AiJobStage {
+    constructor(aiClient, logger) {
+        super({
+            name: 'Rewrite',
+            inputDir: DIRS.REWRITE.INPUT,
+            outputDir: DIRS.REWRITE.OUTPUT,
+            errorDir: DIRS.REWRITE.ERROR,
+            logger
+        }, aiClient);
     }
 
     /** 12,000 is measured, not guessed. Sweeping this value against a real 49k transcript on
@@ -1238,7 +1378,8 @@ export class AiSummarizeStage extends BaseStage {
      * So this is not a "bigger is faster" dial in either direction. Past ~24k the model loses the
      * thread and repeats itself until it hits the output cap; below that, larger chunks slow decode
      * down (58 tok/s at 24k vs 79 at 12k), so fewer-and-bigger chunks finish a transcript SLOWER
-     * overall. Re-measure before changing this, and re-measure when changing model. */
+     * overall. Re-measure before changing this, and re-measure when changing model — a diferente
+     * modelo, diferente tamaño de chunk optimo, esto no es universal. */
     chunkTranscript(text, maxChars = 12000) {
         const sentences = text
             .replace(/\s+/g, ' ')
@@ -1375,17 +1516,19 @@ export class AiSummarizeStage extends BaseStage {
 
     async processChunks(chunks) {
         const results = [];
-        if (this.currentJob) this.currentJob.totalChunks = chunks.length;
+        this.currentJob.totalChunks = chunks.length;
 
         for (let i = 0; i < chunks.length; i++) {
             const chunkStart = Date.now();
             const input = chunks[i];
-            if (this.currentJob) this.currentJob.currentChunk = i + 1;
+            this.currentJob.currentChunk = i + 1;
 
             console.log(`   ▶️  Chunk ${i + 1}/${chunks.length} (${input.length} chars) — iniciando...`);
 
             const prompt = this.buildChunkPrompt(input, i + 1, chunks.length);
-            const { rawContent } = await this.aiClient.generateContent(prompt, this.currentJob?.abortController.signal);
+            const { client, model, rawContent } = await this.aiClient.generateContent(prompt, this.currentJob.abortController.signal);
+            this.currentJob.model = model;
+            this.currentJob.client = client;
             const content = this.rewrapLongParagraphs(this.cleanProse(rawContent));
 
             if (!content) {
@@ -1406,103 +1549,19 @@ export class AiSummarizeStage extends BaseStage {
             results.push(content);
         }
 
-        return results;
+        return { chunks: results, model: this.currentJob.model, client: this.currentJob.client };
     }
 
     async buildRawTranscript(rawTranscript) {
         const chunks = this.chunkTranscript(rawTranscript);
         console.log(`   ✂️  Transcript (${rawTranscript.length} chars) split into ${chunks.length} chunk(s): [${chunks.map(c => c.length).join(', ')}]`);
-        const chunkResults = await this.processChunks(chunks);
-
-        return chunkResults;
-    }
-
-    async _callAI(transcript) {
-
-        // Two short scalar fields on their own lines, then the prose as the rest of the message.
-        // The summary is Markdown with headings, bullets and quotes, so it cannot live inside a JSON
-        // string without flawless escaping — see buildChunkPrompt for why that failed. Here the
-        // scalars are trivially parseable and the prose needs no parsing at all.
-        //
-        // Note there is deliberately no "model_used" field. It used to be requested, and the skeleton
-        // in this very prompt showed it pre-filled as "deepseek" — which the model dutifully copied,
-        // so every summary reported "deepseek" no matter what actually ran. The real model name is
-        // already known in code and does not need to round-trip through the model.
-        const prompt = `
-            You are an expert analyst. Read the transcript at the end of this message and produce a
-            structured summary of it.
-
-            ### OUTPUT FORMAT — follow this EXACTLY
-            Line 1: TITLE: followed by the most likely video title, inferred strictly from the transcript.
-            Line 2: LANGUAGE: followed by the transcript's original language in English (e.g. Spanish, English, French).
-            Line 3: the marker SUMMARY: on a line of its own.
-            Everything after that marker: the summary itself, as free-form Markdown.
-
-            Emit nothing before TITLE: and nothing after the summary. No JSON, no code fences, no commentary.
-
-            ### SUMMARY REQUIREMENTS
-            - Be exhaustive and strictly grounded in the transcript. Do NOT invent, assume, or add
-              outside information, and do NOT draw conclusions the speaker does not state.
-            - Cover the key points, main arguments and explicit conclusions.
-            - Use Markdown headings, bullet lists and **bold** for readability. Quotes and any
-              punctuation you need are fine — this is plain Markdown, not a quoted string.
-            - ${OVERRIDE_LANG
-                ? `Write in ${OVERRIDE_LANG}.`
-                : `Write in the same language as the transcript. Do NOT translate.`}
-
-            ### EXAMPLE SHAPE
-            TITLE: The title inferred from the transcript
-            LANGUAGE: Spanish
-            SUMMARY:
-            ## First theme
-
-            - A key point the speaker actually makes.
-
-            TRANSCRIPT:
-            ---
-            ${transcript}
-            ---
-            `;
-
-
-        console.log(`   📝 [PASO 1/2] Generando resumen corto...`);
-        const step1Start = Date.now();
-        if (this.currentJob) this.currentJob.step = 'summary';
-        const { client, model, rawContent } = await this.aiClient.generateContent(prompt, this.currentJob?.abortController.signal);
-        console.log(`   ✅ [PASO 1/2] Resumen corto listo en ${Math.round((Date.now() - step1Start) / 1000)}s`);
-
-        console.log(`   📝 [PASO 2/2] Generando versión completa reescrita (chunk por chunk, más lento)...`);
-        const step2Start = Date.now();
-        if (this.currentJob) this.currentJob.step = 'rewrite';
-        const fullContentChunks = await this.buildRawTranscript(transcript) || ""
-        console.log(`   ✅ [PASO 2/2] Versión completa lista en ${Math.round((Date.now() - step2Start) / 1000)}s`);
-
-        return {
-            fullContentChunks: fullContentChunks,
-            rawContent,
-            client,
-            model,
-        };
+        return this.processChunks(chunks);
     }
 
     async execute(filePath) {
-
         const videoId = extractVideoIdFromPath(filePath);
         const fileSizeBytes = await fs.stat(filePath).then(s => s.size).catch(() => 0);
-
-        // this.currentJob es lo que server.js lee para /api/state y para el boton de cancelar —
-        // se pisa entero al empezar cada fichero y se limpia SIEMPRE al salir (exito, error o
-        // cancelacion), en el finally de abajo, para que nunca se quede un job "fantasma" si
-        // execute() termina por cualquier camino que no sea el feliz.
-        this.currentJob = {
-            videoId,
-            step: 'summary',
-            currentChunk: 0,
-            totalChunks: 0,
-            fileSizeBytes,
-            startedAt: Date.now(),
-            abortController: new AbortController(),
-        };
+        this.startJob(videoId, fileSizeBytes, 'rewrite');
 
         const fileStart = Date.now();
         try {
@@ -1511,44 +1570,32 @@ export class AiSummarizeStage extends BaseStage {
             const content = await fs.readFile(filePath, 'utf-8');
             const data = JSON5.parse(content);
 
-            // sanity check (opcional pero recomendado)
             if (data.videoId && data.videoId !== videoId) {
-                console.warn(
-                    `⚠️ videoId mismatch: filename=${videoId}, json=${data.videoId}`
-                );
+                console.warn(`⚠️ videoId mismatch: filename=${videoId}, json=${data.videoId}`);
             }
 
-            // Generate summary
-            const { client, model, rawContent, fullContentChunks } = await this._callAI(data.transcript);
+            const { chunks: fullContentChunks, model, client } = await this.buildRawTranscript(data.transcript) || { chunks: [] };
 
-            const enrichedData = {
-                ...data,
-                model,
-                client,
-                summaryDate: new Date().toISOString(),
-                rawContent,
-                fullContentChunks
+            // A diferencia de SummarizeStage, esto NO repite todo el download/output — el
+            // resumen ya lo hace (ver SummarizeStage), asi que aqui solo va lo que le falta a
+            // InterpretSummary para completar la mitad de rewrite.
+            const rewritePart = {
+                videoId,
+                rewriteModel: model,
+                rewriteClient: client,
+                rewriteDate: new Date().toISOString(),
+                fullContentChunks,
             };
 
-            const outPath = path.join(
-                this.outputDir,
-                `${data.videoId}.ai.raw.json`
-            );
-
-            await fs.writeFile(outPath, JSON.stringify(enrichedData, null, 2));
-
+            const outPath = path.join(this.outputDir, `${videoId}.rewrite-part.json`);
+            await fs.writeFile(outPath, JSON.stringify(rewritePart, null, 2));
             await this.logSuccess([filePath], [outPath]);
 
-            console.log(`   🏁 ${videoId} completado en ${Math.round((Date.now() - fileStart) / 1000)}s`);
-
+            console.log(`   🏁 ${videoId} (reescritura) completado en ${Math.round((Date.now() - fileStart) / 1000)}s`);
         } catch (err) {
-            // El SDK de OpenAI no pone err.name a "APIUserAbortError" de verdad (se queda en el
-            // "Error" por defecto que hereda de la clase base) — la unica forma fiable de saber
-            // si esto vino de pulsar "cancelar" es mirar la señal que NOSOTROS controlamos, no
-            // adivinar la forma del error. Si esta aborted, es el usuario, no un fallo real.
-            const wasCancelled = this.currentJob?.abortController.signal.aborted ?? false;
+            const wasCancelled = this.wasCancelled();
             const reported = wasCancelled ? new Error('Cancelado por el usuario') : err;
-            console.error(`   ${wasCancelled ? '🛑' : '❌'} ${wasCancelled ? 'Cancelado' : 'Error procesando'} ${filePath}: ${err.message}`);
+            console.error(`   ${wasCancelled ? '🛑' : '❌'} ${wasCancelled ? 'Cancelado' : 'Error reescribiendo'} ${filePath}: ${err.message}`);
             await this.moveToError([filePath], reported);
         } finally {
             this.currentJob = null;
@@ -1567,7 +1614,7 @@ export class InterpretSummaryStage extends BaseStage {
         });
     }
 
-    /** Reads the TITLE / LANGUAGE / SUMMARY: shape that AiSummarizeStage._callAI asks for.
+    /** Reads the TITLE / LANGUAGE / SUMMARY: shape that SummarizeStage.buildPrompt asks for.
      *
      * This replaced a JSON parse guarded by three escalating repair passes (a string-escaping state
      * machine, a "content"-value regex rewrite, and a code-fence stripper). They existed because the
@@ -1610,26 +1657,31 @@ export class InterpretSummaryStage extends BaseStage {
             .join('\n\n');
     }
 
+    /** El fichero que dispara esta etapa es SIEMPRE el .rewrite-part.json (asi lo filtra
+     * server.js: solo entra en la lista cuando su hermano .summary-part.json YA existe) — pero
+     * hace falta leer los DOS, porque summarize y rewrite corrieron en paralelo, cada uno con su
+     * propio modelo, sobre el mismo transcript. */
     async execute(filePath) {
-
         const videoId = extractVideoIdFromPath(filePath);
+        const summaryPartPath = path.join(this.inputDir, `${videoId}.summary-part.json`);
+        const rewritePartPath = filePath;
 
         try {
-            //const inputPath = path.join(DIRS.RAW, file);
             console.log(`   Processing: ${filePath}...`);
 
-            const content = await fs.readFile(filePath, 'utf-8');
-            const data = JSON5.parse(content);
+            const [summaryRaw, rewriteRaw] = await Promise.all([
+                fs.readFile(summaryPartPath, 'utf-8'),
+                fs.readFile(rewritePartPath, 'utf-8'),
+            ]);
+            const summaryData = JSON5.parse(summaryRaw);
+            const rewriteData = JSON5.parse(rewriteRaw);
 
-            // sanity check (opcional pero recomendado)
-            if (data.videoId && data.videoId !== videoId) {
-                console.warn(
-                    `⚠️ videoId mismatch: filename=${videoId}, json=${data.videoId}`
-                );
+            if (summaryData.videoId && summaryData.videoId !== videoId) {
+                console.warn(`⚠️ videoId mismatch: filename=${videoId}, json=${summaryData.videoId}`);
             }
 
-            const parsed = this.parseSummary(data.rawContent);
-            const fullContent = this.assembleFullContent(data.fullContentChunks);
+            const parsed = this.parseSummary(summaryData.rawContent);
+            const fullContent = this.assembleFullContent(rewriteData.fullContentChunks);
 
             const title = parsed.title || "Untitled Video";
 
@@ -1642,14 +1694,23 @@ export class InterpretSummaryStage extends BaseStage {
                 fullContent ? `---\n\n## Transcripción completa\n\n${fullContent}` : '',
             ].filter(Boolean).join('\n\n');
 
+            // `model`/`client` combinados para lo que ya muestra la UI (una sola insignia por
+            // tarjeta) — summaryModel/rewriteModel se guardan aparte para quien quiera el
+            // detalle exacto de cual modelo hizo cada mitad.
+            const sameModel = summaryData.summaryModel === rewriteData.rewriteModel;
+            const model = sameModel ? summaryData.summaryModel : `${summaryData.summaryModel} + ${rewriteData.rewriteModel}`;
+            const client = sameModel ? summaryData.summaryClient : `${summaryData.summaryClient} + ${rewriteData.rewriteClient}`;
+
             const enrichedData = {
-                ...data,
+                ...summaryData,
                 title,
                 language: parsed.language || "Unknown",
-                // data.model is what AiSummarizeStage recorded from the client that actually ran.
-                // This used to read `parsed.model_used || model` — a bare `model` that was never in
-                // scope, so any transcript without the field crashed with a ReferenceError instead.
-                model: data.model,
+                model,
+                client,
+                summaryModel: summaryData.summaryModel,
+                summaryClient: summaryData.summaryClient,
+                rewriteModel: rewriteData.rewriteModel,
+                rewriteClient: rewriteData.rewriteClient,
                 summaryBody: parsed.content || "",
                 fullContent: fullContent,
                 markdown,
@@ -1664,11 +1725,11 @@ export class InterpretSummaryStage extends BaseStage {
                 fs.writeFile(mdOut, markdown)
             ]);
 
-            await this.logSuccess([filePath], [jsonOut, mdOut]);
+            await this.logSuccess([summaryPartPath, rewritePartPath], [jsonOut, mdOut]);
 
         } catch (err) {
             console.error(`   ❌ Error processing ${filePath}: ${err.message}`, err);
-            await this.moveToError([filePath], err);
+            await this.moveToError([summaryPartPath, rewritePartPath], err);
         }
     }
 }
@@ -1874,6 +1935,23 @@ export async function moveOutputs(srcDir, destDir, filterFn) {
     }
 }
 
+/** Igual que moveOutputs, pero reparte el MISMO fichero a varios directorios en vez de moverlo a
+ * uno solo — para SUMMARIZE y REWRITE, que leen el mismo download/output cada una por su lado
+ * (no una detras de otra) para poder usar modelos de IA distintos en paralelo de verdad. Copia a
+ * todos los destinos salvo el ultimo, y al ultimo lo MUEVE — asi el fichero termina en todos los
+ * sitios y no se queda huerfano en el directorio de origen. */
+export async function fanOutOutputs(srcDir, destDirs, filterFn) {
+    const files = await fs.readdir(srcDir);
+
+    for (const f of files.filter(filterFn)) {
+        const srcPath = path.join(srcDir, f);
+        for (const destDir of destDirs.slice(0, -1)) {
+            await fs.copyFile(srcPath, path.join(destDir, f));
+        }
+        await fs.rename(srcPath, path.join(destDirs[destDirs.length - 1], f));
+    }
+}
+
 export function sleep(ms) {
     // `setTimeout` aqui es el de 'timers/promises' (importado arriba), ya devuelve una Promise.
     return setTimeout(ms);
@@ -1895,7 +1973,7 @@ export function sleep(ms) {
  * `stage.execute()` already logs and moves failures to error/ for every stage; this adds one more
  * layer of protection around it because DownloadStage historically could throw past its own
  * try/catch, and one bad video must not take the whole worker down with it. */
-export async function runStageWorker(stage, { filterInput, upstreamDone, nextInputDir, filterMove, pollMs = 250, isPaused }) {
+export async function runStageWorker(stage, { filterInput, upstreamDone, nextInputDir, nextInputDirs, filterMove, pollMs = 250, isPaused }) {
     while (true) {
         // Pausada desde Settings ("dame tiempo a configurar otro LLM"): no se toca listInputs ni
         // execute, así que lo que ya hay en input/ se queda esperando intacto hasta reanudar —
@@ -1918,7 +1996,12 @@ export async function runStageWorker(stage, { filterInput, upstreamDone, nextInp
                 // ya se registro y se movio a error/ dentro de stage.execute()
             }
             stage.activeVideoId = null;
-            if (nextInputDir) {
+            // nextInputDirs (plural) es para el reparto DOWNLOAD -> SUMMARIZE + REWRITE al mismo
+            // tiempo — nextInputDir (singular) sigue siendo el caso normal de una sola etapa
+            // siguiente.
+            if (nextInputDirs) {
+                await fanOutOutputs(stage.outputDir, nextInputDirs, filterMove ?? filterInput);
+            } else if (nextInputDir) {
                 await moveOutputs(stage.outputDir, nextInputDir, filterMove ?? filterInput);
             }
         }
@@ -1935,16 +2018,20 @@ export async function runStageWorker(stage, { filterInput, upstreamDone, nextInp
 // ==========================================================
 
 async function main() {
-    // 1. Configure AI
-    // Options: 'lmstudio' (local), 'nvidia', 'gemini', 'deepseek'
+    // 1. Configure AI — el modo CLI no tiene Settings por proveedor/etapa (eso es cosa de
+    // server.js), asi que aqui summarize y rewrite usan el mismo AI_PROVIDER de .env para los
+    // dos. Si se necesitan modelos distintos por etapa desde la terminal, hay que correr
+    // server.js en vez de esto.
     const provider = process.env.AI_PROVIDER || 'lmstudio';
-    const aiClient = createAiClient(provider);
+    const summarizeAiClient = createAiClient(provider);
+    const rewriteAiClient = createAiClient(provider);
 
     const logger = new EventLogger();
 
     const processInputsStage = new ProcessInputsStage(logger);
     const downloader = new DownloadStage(logger);
-    const aiSummarizer = new AiSummarizeStage(aiClient, logger);
+    const summarizer = new SummarizeStage(summarizeAiClient, logger);
+    const rewriter = new RewriteStage(rewriteAiClient, logger);
     const interpretSummaryStage = new InterpretSummaryStage(logger);
     const emailer = new EmailStage(logger);
 
@@ -2041,8 +2128,23 @@ Examples:
     }
 
     const downloadDone = { v: !doDownload };
-    const aiSummarizeDone = { v: !doSummarize };
+    const summarizeDone = { v: !doSummarize };
+    const rewriteDone = { v: !doSummarize };
+    // InterpretSummary no puede avanzar hasta que las DOS mitades hayan terminado — un getter en
+    // vez de un valor fijo, para que siga leyendo el estado real de las otras dos cada vez que
+    // runStageWorker consulta upstreamDone.v.
+    const summarizeAndRewriteDone = { get v() { return summarizeDone.v && rewriteDone.v; } };
     const interpretSummaryDone = { v: !doSummarize };
+
+    // El fichero que dispara InterpretSummary es SIEMPRE el .rewrite-part.json — solo cuenta
+    // como "listo" cuando su hermano .summary-part.json ya esta en la misma carpeta. El tercer
+    // argumento de un callback de .filter() es el array completo, asi no hace falta releer el
+    // directorio a mano por cada fichero.
+    const interpretJoinFilter = (f, _i, allFiles) => {
+        if (!f.endsWith('.rewrite-part.json')) return false;
+        const videoId = f.slice(0, -'.rewrite-part.json'.length);
+        return allFiles.includes(`${videoId}.summary-part.json`);
+    };
 
     const workers = [];
 
@@ -2057,38 +2159,49 @@ Examples:
             await runStageWorker(downloader, {
                 filterInput: f => f.endsWith('.json'),
                 upstreamDone: { v: true },
-                nextInputDir: DIRS.AI_SUMMARIZE.INPUT,
+                nextInputDirs: [DIRS.SUMMARIZE.INPUT, DIRS.REWRITE.INPUT],
                 filterMove: f => f.endsWith('.json'),
             });
             downloadDone.v = true;
         })());
     }
 
-    // 2A. Stage: AI Summarize
+    // 2A. Stage: Summarize (resumen corto)
     if (doSummarize) {
         // Recoge tambien lo que quedara pendiente de descargas de un proceso anterior.
-        await moveOutputs(DIRS.DOWNLOAD.OUTPUT, DIRS.AI_SUMMARIZE.INPUT, f => f.endsWith('.json'));
+        await fanOutOutputs(DIRS.DOWNLOAD.OUTPUT, [DIRS.SUMMARIZE.INPUT, DIRS.REWRITE.INPUT], f => f.endsWith('.json'));
 
-        console.log(`\n🟣 [STAGE 2A] Watching for files to summarize in: ${DIRS.AI_SUMMARIZE.INPUT}`);
+        console.log(`\n🟣 [STAGE 2A] Watching for files to summarize in: ${DIRS.SUMMARIZE.INPUT}`);
         workers.push((async () => {
-            await runStageWorker(aiSummarizer, {
+            await runStageWorker(summarizer, {
                 filterInput: f => f.endsWith('.json'),
                 upstreamDone: downloadDone,
                 nextInputDir: DIRS.INTERPRET_SUMMARY.INPUT,
-                filterMove: f => f.endsWith('.json'),
+                filterMove: f => f.endsWith('.summary-part.json'),
             });
-            aiSummarizeDone.v = true;
+            summarizeDone.v = true;
         })());
 
-        // 2B. Stage: Interpret Summary
-        // Recoge tambien lo que quedara pendiente de un ai-summarize anterior.
-        await moveOutputs(DIRS.AI_SUMMARIZE.OUTPUT, DIRS.INTERPRET_SUMMARY.INPUT, f => f.endsWith('.json'));
+        // 2B. Stage: Rewrite (reescritura/traduccion completa) — en PARALELO con 2A, no detras:
+        // lee el mismo download/output, con su propio modelo de IA, y ninguna de las dos espera
+        // a la otra.
+        console.log(`\n🟣 [STAGE 2B] Watching for files to rewrite in: ${DIRS.REWRITE.INPUT}`);
+        workers.push((async () => {
+            await runStageWorker(rewriter, {
+                filterInput: f => f.endsWith('.json'),
+                upstreamDone: downloadDone,
+                nextInputDir: DIRS.INTERPRET_SUMMARY.INPUT,
+                filterMove: f => f.endsWith('.rewrite-part.json'),
+            });
+            rewriteDone.v = true;
+        })());
 
-        console.log(`\n🟣 [STAGE 2B] Watching for files to interpret in: ${DIRS.INTERPRET_SUMMARY.INPUT}`);
+        // 2C. Stage: Interpret Summary — junta las dos mitades.
+        console.log(`\n🟣 [STAGE 2C] Watching for files to interpret in: ${DIRS.INTERPRET_SUMMARY.INPUT}`);
         workers.push((async () => {
             await runStageWorker(interpretSummaryStage, {
-                filterInput: f => f.endsWith('.json'),
-                upstreamDone: aiSummarizeDone,
+                filterInput: interpretJoinFilter,
+                upstreamDone: summarizeAndRewriteDone,
                 nextInputDir: DIRS.EMAIL.INPUT,
                 filterMove: f => f.endsWith('.json') || f.endsWith('.md'),
             });

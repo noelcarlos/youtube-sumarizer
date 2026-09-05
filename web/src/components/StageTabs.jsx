@@ -6,7 +6,8 @@ import { TABS, matchesTab } from '../stages.js';
 const TAB_MESSAGE_KEY = {
   ALL: 'all',
   DOWNLOAD: 'download',
-  AI_SUMMARIZE: 'aiSummarize',
+  SUMMARIZE: 'summarize',
+  REWRITE: 'rewrite',
   INTERPRET_SUMMARY: 'interpretSummary',
   EMAIL: 'email',
   DONE: 'done',

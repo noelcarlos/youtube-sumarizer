@@ -1,25 +1,31 @@
-// Orden REAL del pipeline (para calcular done/pending) — no toca esto, espejo de STAGE_ORDER
-// en server.js. Los textos ya NO viven aqui (antes estaban en español a pelo) — esto solo
-// expone claves, la traduccion la hace cada componente con useTranslations() contra
-// messages/es.json|en.json.
-export const PIPELINE_ORDER = ['DOWNLOAD', 'AI_SUMMARIZE', 'INTERPRET_SUMMARY', 'EMAIL'];
+// Orden REAL del pipeline (para calcular done/pending) — espejo de STAGE_ORDER en server.js.
+// SUMMARIZE y REWRITE en realidad corren en PARALELO (las dos leen el mismo download/output a
+// la vez, cada una con su propio modelo), no una detras de otra — pero un video solo puede
+// tener UN "stage actual" en /api/state (el que todavia no ha terminado de las dos), asi que
+// tratarlas como dos casillas seguidas aqui es una simplificacion razonable: si UNA termina
+// antes que la otra, su segmento se queda pintado "pending" hasta que la otra tambien termine,
+// en vez de mostrarse ya "done" por separado. Los textos ya NO viven aqui (antes estaban en
+// español a pelo) — esto solo expone claves, la traduccion la hace cada componente con
+// useTranslations() contra messages/es.json|en.json.
+export const PIPELINE_ORDER = ['DOWNLOAD', 'SUMMARIZE', 'REWRITE', 'INTERPRET_SUMMARY', 'EMAIL'];
 
 // Orden VISUAL (tabs y segmentos de la barra de progreso) — al reves del pipeline real, a
 // peticion: lo mas cercano a terminar se ve primero. stationClasses() traduce cada entrada de
 // aqui a su posicion real en PIPELINE_ORDER para pintar done/pending correctamente sin importar
 // en que orden se muestren.
-export const STATIONS = ['EMAIL', 'INTERPRET_SUMMARY', 'AI_SUMMARIZE', 'DOWNLOAD'];
+export const STATIONS = ['EMAIL', 'INTERPRET_SUMMARY', 'REWRITE', 'SUMMARIZE', 'DOWNLOAD'];
 
 // Stage constante -> clave del namespace "Stages"/"StageLabel" en los .json de mensajes.
 export const STAGE_MESSAGE_KEY = {
   DOWNLOAD: 'download',
-  AI_SUMMARIZE: 'aiSummarize',
+  SUMMARIZE: 'summarize',
+  REWRITE: 'rewrite',
   INTERPRET_SUMMARY: 'interpretSummary',
   EMAIL: 'email',
   DONE: 'done',
 };
 
-export const TABS = ['ALL', 'EMAIL', 'INTERPRET_SUMMARY', 'AI_SUMMARIZE', 'DOWNLOAD', 'DONE', 'ERROR'];
+export const TABS = ['ALL', 'EMAIL', 'INTERPRET_SUMMARY', 'REWRITE', 'SUMMARIZE', 'DOWNLOAD', 'DONE', 'ERROR'];
 
 export function matchesTab(video, tabKey) {
   if (tabKey === 'ALL') return true;

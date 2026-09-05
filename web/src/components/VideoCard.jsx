@@ -198,7 +198,7 @@ export function VideoCard({ video, onOpenReader }) {
             <div className="mt-0.5 text-xs text-muted">{formatRelativeTime(video.updatedAt, locale)}</div>
           )}
 
-          {processing && video.stage === 'AI_SUMMARIZE' && video.aiProgress && (
+          {processing && (video.stage === 'SUMMARIZE' || video.stage === 'REWRITE') && video.aiProgress && (
             <AiProgressBar progress={video.aiProgress} t={t} />
           )}
 
@@ -215,7 +215,7 @@ export function VideoCard({ video, onOpenReader }) {
                 {t('readSummary')}
               </button>
             )}
-            {processing && video.stage === 'AI_SUMMARIZE' && (
+            {processing && (video.stage === 'SUMMARIZE' || video.stage === 'REWRITE') && (
               <button
                 onClick={cancel}
                 disabled={cancelling}

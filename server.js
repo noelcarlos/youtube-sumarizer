@@ -16,8 +16,8 @@ import path from 'node:path';
 import { marked } from 'marked';
 import nodemailer from 'nodemailer';
 import {
-    DIRS, initDirs, EventLogger, moveOutputs, runStageWorker, createAiClient, listModels, AI_PROVIDER_DEFAULTS,
-    ProcessInputsStage, DownloadStage, AiSummarizeStage, InterpretSummaryStage, EmailStage,
+    DIRS, initDirs, EventLogger, moveOutputs, fanOutOutputs, runStageWorker, createAiClient, listModels, AI_PROVIDER_DEFAULTS,
+    ProcessInputsStage, DownloadStage, SummarizeStage, RewriteStage, InterpretSummaryStage, EmailStage,
     EMAIL_CONFIG,
 } from './resumir_video.js';
 
@@ -37,25 +37,42 @@ await initDirs();
 
 const SETTINGS_PATH = path.join('pipeline-data', 'settings.json');
 
-const DEFAULT_SETTINGS = {
-    llm: {
+// llm.summarize y llm.rewrite son independientes a proposito — dos etapas que corren en
+// paralelo con su propio modelo cada una (un modelo grande/lento para el resumen, uno chico/
+// rapido para la reescritura, o al reves, lo que se necesite).
+function defaultLlmStageConfig() {
+    return {
         provider: process.env.AI_PROVIDER || 'lmstudio',
         overrides: { gemini: {}, deepseek: {}, nvidia: {}, lmstudio: {} },
+    };
+}
+
+const DEFAULT_SETTINGS = {
+    llm: {
+        summarize: defaultLlmStageConfig(),
+        rewrite: defaultLlmStageConfig(),
     },
     email: { to: EMAIL_CONFIG.to, bcc: EMAIL_CONFIG.bcc },
     // Cada etapa pausada por separado: "dame tiempo a configurar otro LLM" solo tiene sentido
-    // pausando AI_SUMMARIZE, pero se ofrecen las 4 porque la misma necesidad aplica a cualquier
-    // etapa (por ejemplo, pausar EMAIL mientras se cambia el destinatario en este mismo Settings).
-    paused: { DOWNLOAD: false, AI_SUMMARIZE: false, INTERPRET_SUMMARY: false, EMAIL: false },
+    // pausando la etapa que lo usa, pero se ofrecen las 5 porque la misma necesidad aplica a
+    // cualquier etapa (por ejemplo, pausar EMAIL mientras se cambia el destinatario aqui mismo).
+    paused: { DOWNLOAD: false, SUMMARIZE: false, REWRITE: false, INTERPRET_SUMMARY: false, EMAIL: false },
 };
+
+function mergeLlmStageConfig(parsed) {
+    return {
+        provider: parsed?.provider || DEFAULT_SETTINGS.llm.summarize.provider,
+        overrides: { ...DEFAULT_SETTINGS.llm.summarize.overrides, ...parsed?.overrides },
+    };
+}
 
 async function loadSettings() {
     try {
         const parsed = JSON.parse(await fs.readFile(SETTINGS_PATH, 'utf8'));
         return {
             llm: {
-                provider: parsed.llm?.provider || DEFAULT_SETTINGS.llm.provider,
-                overrides: { ...DEFAULT_SETTINGS.llm.overrides, ...parsed.llm?.overrides },
+                summarize: mergeLlmStageConfig(parsed.llm?.summarize),
+                rewrite: mergeLlmStageConfig(parsed.llm?.rewrite),
             },
             email: { ...DEFAULT_SETTINGS.email, ...parsed.email },
             paused: { ...DEFAULT_SETTINGS.paused, ...parsed.paused },
@@ -101,12 +118,19 @@ const paused = settings.paused;
 EMAIL_CONFIG.to = settings.email.to;
 EMAIL_CONFIG.bcc = settings.email.bcc;
 
-let aiClient = createAiClient(settings.llm.provider, settings.llm.overrides[settings.llm.provider] || {});
+function buildAiClientFor(stageKey) {
+    const cfg = settings.llm[stageKey];
+    return createAiClient(cfg.provider, cfg.overrides[cfg.provider] || {});
+}
+
+let summarizeAiClient = buildAiClientFor('summarize');
+let rewriteAiClient = buildAiClientFor('rewrite');
 const logger = new EventLogger();
 
 const processInputsStage = new ProcessInputsStage(logger);
 const downloader = new DownloadStage(logger);
-const aiSummarizer = new AiSummarizeStage(aiClient, logger);
+const summarizer = new SummarizeStage(summarizeAiClient, logger);
+const rewriter = new RewriteStage(rewriteAiClient, logger);
 const interpretSummaryStage = new InterpretSummaryStage(logger);
 const emailer = new EmailStage(logger);
 
@@ -114,10 +138,21 @@ const emailer = new EmailStage(logger);
 // que runStageWorker simplemente sondea para siempre cuando su cola esta vacia.
 const NEVER_DONE = { v: false };
 
-// Traspaso inicial de lo que ya hubiera en las carpetas de una sesion anterior del CLI.
+/** El fichero que dispara InterpretSummary es SIEMPRE el .rewrite-part.json — solo cuenta como
+ * "listo" cuando su hermano .summary-part.json YA existe en la misma carpeta (las dos etapas
+ * corren en paralelo, cada una a su ritmo). El tercer argumento de un callback de .filter() es
+ * el array completo, asi no hace falta releer el directorio a mano por cada fichero. */
+function interpretJoinFilter(f, _i, allFiles) {
+    if (!f.endsWith('.rewrite-part.json')) return false;
+    const videoId = f.slice(0, -'.rewrite-part.json'.length);
+    return allFiles.includes(`${videoId}.summary-part.json`);
+}
+
+// Traspaso inicial de lo que ya hubiera en las carpetas de una sesion anterior.
 await moveOutputs(DIRS.PROCESS_INPUTS.OUTPUT, DIRS.DOWNLOAD.INPUT, f => f.endsWith('.json'));
-await moveOutputs(DIRS.DOWNLOAD.OUTPUT, DIRS.AI_SUMMARIZE.INPUT, f => f.endsWith('.json'));
-await moveOutputs(DIRS.AI_SUMMARIZE.OUTPUT, DIRS.INTERPRET_SUMMARY.INPUT, f => f.endsWith('.json'));
+await fanOutOutputs(DIRS.DOWNLOAD.OUTPUT, [DIRS.SUMMARIZE.INPUT, DIRS.REWRITE.INPUT], f => f.endsWith('.json'));
+await moveOutputs(DIRS.SUMMARIZE.OUTPUT, DIRS.INTERPRET_SUMMARY.INPUT, f => f.endsWith('.summary-part.json'));
+await moveOutputs(DIRS.REWRITE.OUTPUT, DIRS.INTERPRET_SUMMARY.INPUT, f => f.endsWith('.rewrite-part.json'));
 await moveOutputs(DIRS.INTERPRET_SUMMARY.OUTPUT, DIRS.EMAIL.INPUT, f => f.endsWith('.json') || f.endsWith('.md'));
 
 function startForever(stage, opts) {
@@ -131,18 +166,24 @@ function startForever(stage, opts) {
 
 startForever(downloader, {
     filterInput: f => f.endsWith('.json'),
-    nextInputDir: DIRS.AI_SUMMARIZE.INPUT,
+    nextInputDirs: [DIRS.SUMMARIZE.INPUT, DIRS.REWRITE.INPUT],
     filterMove: f => f.endsWith('.json'),
     isPaused: () => paused.DOWNLOAD,
 });
-startForever(aiSummarizer, {
+startForever(summarizer, {
     filterInput: f => f.endsWith('.json'),
     nextInputDir: DIRS.INTERPRET_SUMMARY.INPUT,
-    filterMove: f => f.endsWith('.json'),
-    isPaused: () => paused.AI_SUMMARIZE,
+    filterMove: f => f.endsWith('.summary-part.json'),
+    isPaused: () => paused.SUMMARIZE,
+});
+startForever(rewriter, {
+    filterInput: f => f.endsWith('.json'),
+    nextInputDir: DIRS.INTERPRET_SUMMARY.INPUT,
+    filterMove: f => f.endsWith('.rewrite-part.json'),
+    isPaused: () => paused.REWRITE,
 });
 startForever(interpretSummaryStage, {
-    filterInput: f => f.endsWith('.json'),
+    filterInput: interpretJoinFilter,
     nextInputDir: DIRS.EMAIL.INPUT,
     filterMove: f => f.endsWith('.json') || f.endsWith('.md'),
     isPaused: () => paused.INTERPRET_SUMMARY,
@@ -154,41 +195,63 @@ startForever(emailer, {
     isPaused: () => paused.EMAIL,
 });
 
-console.log('🟣 4 workers de etapa arrancados (download, ai-summarize, interpret-summary, email)');
+console.log('🟣 5 workers de etapa arrancados (download, summarize, rewrite, interpret-summary, email) — summarize y rewrite corren en paralelo');
 
-/** Vista de /api/settings: nunca devuelve una API key en crudo, solo si hay una configurada
- * (`hasKey`) — la propia o la de .env si Settings no la ha pisado todavia. */
-function settingsView() {
+function llmStageView(stageKey) {
+    const cfg = settings.llm[stageKey];
     const providers = {};
     for (const [prov, def] of Object.entries(AI_PROVIDER_DEFAULTS)) {
-        const ov = settings.llm.overrides[prov] || {};
+        const ov = cfg.overrides[prov] || {};
         providers[prov] = {
             model: ov.model || def.model,
             baseUrl: ov.baseUrl ?? def.baseUrl,
             hasKey: Boolean(ov.apiKey) || def.hasKey,
         };
     }
+    return { provider: cfg.provider, providers };
+}
+
+/** Vista de /api/settings: nunca devuelve una API key en crudo, solo si hay una configurada
+ * (`hasKey`) — la propia o la de .env si Settings no la ha pisado todavia. summarize y rewrite
+ * son independientes: cada uno puede estar en un proveedor/modelo distinto. */
+function settingsView() {
     return {
-        llm: { provider: settings.llm.provider, providers },
+        llm: {
+            summarize: llmStageView('summarize'),
+            rewrite: llmStageView('rewrite'),
+        },
         email: settings.email,
         paused: settings.paused,
     };
 }
 
 /** POST /api/settings solo manda lo que cambio, no el objeto entero — por eso es un merge
- * campo a campo y no un reemplazo. Si toca provider/overrides del LLM, reconstruye el aiClient
- * y lo reasigna a aiSummarizer.aiClient EN CALIENTE: el worker no se reinicia, la siguiente vez
- * que recoja un video ya usa el cliente nuevo. */
+ * campo a campo y no un reemplazo. body.llm.summarize / body.llm.rewrite se procesan cada uno
+ * por separado — si toca provider/overrides de UNO, reconstruye SOLO ese aiClient y lo reasigna
+ * en caliente (summarizer.aiClient o rewriter.aiClient): el worker no se reinicia, la siguiente
+ * vez que recoja un video ya usa el cliente nuevo, sin afectar a la otra etapa. */
 async function applySettingsPatch(body) {
-    if (body.llm) {
-        if (body.llm.provider) settings.llm.provider = body.llm.provider;
-        if (body.llm.overrides) {
-            for (const [prov, ov] of Object.entries(body.llm.overrides)) {
-                settings.llm.overrides[prov] = { ...settings.llm.overrides[prov], ...ov };
+    if (body.llm?.summarize) {
+        const patch = body.llm.summarize;
+        if (patch.provider) settings.llm.summarize.provider = patch.provider;
+        if (patch.overrides) {
+            for (const [prov, ov] of Object.entries(patch.overrides)) {
+                settings.llm.summarize.overrides[prov] = { ...settings.llm.summarize.overrides[prov], ...ov };
             }
         }
-        aiClient = createAiClient(settings.llm.provider, settings.llm.overrides[settings.llm.provider] || {});
-        aiSummarizer.aiClient = aiClient;
+        summarizeAiClient = buildAiClientFor('summarize');
+        summarizer.aiClient = summarizeAiClient;
+    }
+    if (body.llm?.rewrite) {
+        const patch = body.llm.rewrite;
+        if (patch.provider) settings.llm.rewrite.provider = patch.provider;
+        if (patch.overrides) {
+            for (const [prov, ov] of Object.entries(patch.overrides)) {
+                settings.llm.rewrite.overrides[prov] = { ...settings.llm.rewrite.overrides[prov], ...ov };
+            }
+        }
+        rewriteAiClient = buildAiClientFor('rewrite');
+        rewriter.aiClient = rewriteAiClient;
     }
     if (body.email) Object.assign(settings.email, body.email);
     if (body.email?.to !== undefined) EMAIL_CONFIG.to = settings.email.to;
@@ -205,11 +268,12 @@ async function applySettingsPatch(body) {
 // fuente de verdad extra que se puede desincronizar.
 // ==========================================================
 
-const STAGE_ORDER = ['PROCESS_INPUTS', 'DOWNLOAD', 'AI_SUMMARIZE', 'INTERPRET_SUMMARY', 'EMAIL', 'DONE'];
+const STAGE_ORDER = ['PROCESS_INPUTS', 'DOWNLOAD', 'SUMMARIZE', 'REWRITE', 'INTERPRET_SUMMARY', 'EMAIL', 'DONE'];
 const STAGE_LABEL = {
     PROCESS_INPUTS: 'Encolado',
     DOWNLOAD: 'Descargando',
-    AI_SUMMARIZE: 'Resumiendo (IA)',
+    SUMMARIZE: 'Resumiendo',
+    REWRITE: 'Reescribiendo/Traduciendo',
     INTERPRET_SUMMARY: 'Interpretando',
     EMAIL: 'Enviando email',
     DONE: 'Terminado',
@@ -219,15 +283,36 @@ async function listDir(dir) {
     try { return await fs.readdir(dir); } catch { return []; }
 }
 
-/** El nombre de fichero de cada etapa lleva sufijos distintos (`.ai.raw.json`, `.enriched.json`,
- * `.summary.md`, `.email.html`) — esto los reduce todos al videoId desnudo para poder agrupar. */
+/** El nombre de fichero de cada etapa lleva sufijos distintos (`.summary-part.json`,
+ * `.rewrite-part.json`, `.enriched.json`, `.summary.md`, `.email.html`) — esto los reduce todos
+ * al videoId desnudo para poder agrupar. `.ai.raw.json` ya no lo genera nada nuevo, pero se deja
+ * el reemplazo por si queda algun fichero viejo de antes de separar esta etapa en dos. */
 function videoIdFromFilename(filename) {
     return filename
+        .replace(/\.summary-part\.json$/i, '')
+        .replace(/\.rewrite-part\.json$/i, '')
         .replace(/\.ai\.raw\.json$/i, '')
         .replace(/\.enriched\.json$/i, '')
         .replace(/\.summary\.md$/i, '')
         .replace(/\.email\.html$/i, '')
         .replace(/\.json$/i, '');
+}
+
+/** Un `.summary-part.json` o `.rewrite-part.json` sueltos en INTERPRET_SUMMARY.INPUT (su
+ * hermano todavia no llego) no estan "en Interpretar" de verdad — InterpretSummaryStage ni los
+ * toca hasta que el par este completo (ver interpretJoinFilter). Mientras tanto, ese video sigue
+ * "en Resumen" o "en Reescritura" segun cual de las dos etapas todavia no ha terminado, y ESA es
+ * la entrada que hay que dejar que gane en record() — por eso estos se saltan aqui. */
+function isOrphanInterpretPart(filename, allFilesInDir) {
+    if (filename.endsWith('.summary-part.json')) {
+        const videoId = filename.slice(0, -'.summary-part.json'.length);
+        return !allFilesInDir.includes(`${videoId}.rewrite-part.json`);
+    }
+    if (filename.endsWith('.rewrite-part.json')) {
+        const videoId = filename.slice(0, -'.rewrite-part.json'.length);
+        return !allFilesInDir.includes(`${videoId}.summary-part.json`);
+    }
+    return false;
 }
 
 async function buildState() {
@@ -250,7 +335,11 @@ async function buildState() {
         for (const bucket of ['INPUT', 'OUTPUT', 'ERROR']) {
             const dirPath = dirs[bucket];
             if (!dirPath) continue;
-            for (const f of await listDir(dirPath)) record(videoIdFromFilename(f), stageName, bucket.toLowerCase(), f, path.join(dirPath, f));
+            const filesInDir = await listDir(dirPath);
+            for (const f of filesInDir) {
+                if (stageName === 'INTERPRET_SUMMARY' && bucket === 'INPUT' && isOrphanInterpretPart(f, filesInDir)) continue;
+                record(videoIdFromFilename(f), stageName, bucket.toLowerCase(), f, path.join(dirPath, f));
+            }
         }
     }
     for (const f of await listDir(DIRS.DONE)) record(videoIdFromFilename(f), 'DONE', 'output', f, path.join(DIRS.DONE, f));
@@ -270,23 +359,24 @@ async function buildState() {
 
 const ACTIVE_BY_STAGE = {
     DOWNLOAD: downloader,
-    AI_SUMMARIZE: aiSummarizer,
+    SUMMARIZE: summarizer,
+    REWRITE: rewriter,
     INTERPRET_SUMMARY: interpretSummaryStage,
     EMAIL: emailer,
 };
 
 /** El worker de cada etapa procesa UN fichero a la vez (ver runStageWorker en
  * resumir_video.js), pero /api/state antes marcaba como "procesando" a TODOS los que estuvieran
- * en input/ de esa etapa — con 4 videos esperando turno en AI_SUMMARIZE, la UI los pintaba a los
- * 4 con el spinner activo, cuando en realidad solo uno estaba corriendo de verdad y los otros 3
- * ni habian empezado. `stage.activeVideoId` es la fuente de verdad de cual es cual. */
+ * en input/ de esa etapa — con 4 videos esperando turno, la UI los pintaba a los 4 con el
+ * spinner activo, cuando en realidad solo uno estaba corriendo de verdad y los otros 3 ni habian
+ * empezado. `stage.activeVideoId` es la fuente de verdad de cual es cual. */
 function activeInfoFor(v) {
     const stage = ACTIVE_BY_STAGE[v.stage];
     if (!stage || v.bucket !== 'input' || stage.activeVideoId !== v.videoId) {
         return { processing: false, aiProgress: null };
     }
-    if (v.stage === 'AI_SUMMARIZE' && aiSummarizer.currentJob) {
-        const j = aiSummarizer.currentJob;
+    if ((v.stage === 'SUMMARIZE' || v.stage === 'REWRITE') && stage.currentJob) {
+        const j = stage.currentJob;
         return {
             processing: true,
             aiProgress: {
@@ -309,14 +399,21 @@ async function enrichVideo(v) {
         path.join(DIRS.EMAIL.OUTPUT, `${v.videoId}.enriched.json`),
         path.join(DIRS.EMAIL.INPUT, `${v.videoId}.enriched.json`),
         path.join(DIRS.INTERPRET_SUMMARY.OUTPUT, `${v.videoId}.enriched.json`),
-        path.join(DIRS.INTERPRET_SUMMARY.INPUT, `${v.videoId}.ai.raw.json`),
-        path.join(DIRS.AI_SUMMARIZE.OUTPUT, `${v.videoId}.ai.raw.json`),
+        // Mientras espera a su hermano, lo unico que puede haber aqui es UNA de las dos mitades
+        // (ver isOrphanInterpretPart) — cualquiera de las dos vale para title/language/url.
+        path.join(DIRS.INTERPRET_SUMMARY.INPUT, `${v.videoId}.summary-part.json`),
+        path.join(DIRS.INTERPRET_SUMMARY.INPUT, `${v.videoId}.rewrite-part.json`),
+        path.join(DIRS.SUMMARIZE.OUTPUT, `${v.videoId}.summary-part.json`),
+        path.join(DIRS.REWRITE.OUTPUT, `${v.videoId}.rewrite-part.json`),
         // Estos ultimos no tienen title/language (aun no ha pasado por el modelo), pero SI tienen
         // `url` desde el principio — es el job normalizado que genero ProcessInputsStage. Sin esto,
-        // un video que falla en la descarga (antes de que exista ningun .ai.raw.json) se queda sin
-        // URL en la UI, que es justo el caso en el que mas hace falta poder pinchar en el enlace.
-        path.join(DIRS.AI_SUMMARIZE.INPUT, `${v.videoId}.json`),
-        path.join(DIRS.AI_SUMMARIZE.ERROR, `${v.videoId}.json`),
+        // un video que falla en la descarga (antes de que exista ningun resumen/reescritura) se
+        // queda sin URL en la UI, que es justo el caso en el que mas hace falta poder pinchar en
+        // el enlace.
+        path.join(DIRS.SUMMARIZE.INPUT, `${v.videoId}.json`),
+        path.join(DIRS.SUMMARIZE.ERROR, `${v.videoId}.json`),
+        path.join(DIRS.REWRITE.INPUT, `${v.videoId}.json`),
+        path.join(DIRS.REWRITE.ERROR, `${v.videoId}.json`),
         path.join(DIRS.DOWNLOAD.INPUT, `${v.videoId}.json`),
         path.join(DIRS.DOWNLOAD.ERROR, `${v.videoId}.json`),
     ];
@@ -328,7 +425,10 @@ async function enrichVideo(v) {
                 stageLabel: STAGE_LABEL[v.stage] || v.stage,
                 title: data.title || null,
                 language: data.language || null,
-                model: data.model || null,
+                // data.model existe una vez que InterpretSummary junto las dos mitades;
+                // summaryModel/rewriteModel es lo que hay ANTES de eso, mientras cada etapa
+                // todavia esta trabajando por su lado.
+                model: data.model || data.summaryModel || data.rewriteModel || null,
                 url: data.url || null,
             };
         } catch { /* ese candidato no existe o no es JSON — se prueba el siguiente */ }
@@ -501,13 +601,16 @@ const server = http.createServer(async (req, res) => {
             let parsed;
             try { parsed = JSON.parse(body || '{}'); } catch { return sendJson(res, 400, { error: 'JSON invalido' }); }
             const provider = parsed.provider;
+            const stageKey = parsed.stage === 'rewrite' ? 'rewrite' : 'summarize';
             if (!provider) return sendJson(res, 400, { error: 'falta "provider"' });
             try {
                 // Si el usuario todavia no escribio una key/URL nueva en el formulario, se
-                // prueba con la ya guardada en Settings — asi el combo funciona tanto para
-                // "quiero ver los modelos de lo que ya tengo configurado" como para "acabo de
-                // pegar una key nueva, a ver que modelos trae".
-                const saved = settings.llm.overrides[provider] || {};
+                // prueba con la ya guardada en Settings PARA ESA ETAPA — summarize y rewrite
+                // pueden tener keys distintas para el mismo proveedor, asi que "stage" decide
+                // cual de las dos usar como respaldo. Asi el combo funciona tanto para "quiero
+                // ver los modelos de lo que ya tengo configurado" como para "acabo de pegar una
+                // key nueva, a ver que modelos trae".
+                const saved = settings.llm[stageKey].overrides[provider] || {};
                 const overrides = {
                     apiKey: parsed.apiKey || saved.apiKey,
                     baseUrl: parsed.baseUrl || saved.baseUrl,
@@ -536,15 +639,16 @@ const server = http.createServer(async (req, res) => {
 
         if (req.method === 'POST' && url.pathname.startsWith('/api/videos/') && url.pathname.endsWith('/cancel')) {
             const videoId = url.pathname.split('/')[3];
-            // Solo AI_SUMMARIZE puede cancelarse de verdad ahora mismo: es la unica etapa cuyo
-            // cliente de IA soporta abortar una peticion en vuelo (ver generateContent en
-            // resumir_video.js) — las demas etapas son lo bastante rapidas (descarga, escribir
-            // ficheros, mandar un email ya generado) como para que cancelarlas a mitad no sea algo
-            // que de verdad haga falta.
-            if (aiSummarizer.currentJob?.videoId !== videoId) {
-                return sendJson(res, 409, { error: `${videoId} no se esta procesando en AI Summarize ahora mismo` });
+            // Solo Summarize y Rewrite pueden cancelarse de verdad ahora mismo: son las unicas
+            // etapas cuyo cliente de IA soporta abortar una peticion en vuelo (ver
+            // generateContent en resumir_video.js) — las demas etapas son lo bastante rapidas
+            // (descarga, escribir ficheros, mandar un email ya generado) como para que
+            // cancelarlas a mitad no sea algo que de verdad haga falta.
+            const activeStage = [summarizer, rewriter].find(s => s.currentJob?.videoId === videoId);
+            if (!activeStage) {
+                return sendJson(res, 409, { error: `${videoId} no se esta resumiendo ni reescribiendo ahora mismo` });
             }
-            aiSummarizer.currentJob.abortController.abort();
+            activeStage.currentJob.abortController.abort();
             return sendJson(res, 200, { cancelling: videoId });
         }
 

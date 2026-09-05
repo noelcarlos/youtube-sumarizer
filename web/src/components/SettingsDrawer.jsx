@@ -12,10 +12,11 @@ import { useSettings } from '../hooks/useSettings.js';
 const PROVIDERS = ['lmstudio', 'nvidia', 'gemini', 'deepseek'];
 
 // Cada etapa pausable, junto con la clave de traduccion de su nombre — mismo orden que el
-// pipeline avanza (descarga -> resumen IA -> interpretar -> email).
+// pipeline avanza (descarga -> resumen/reescritura EN PARALELO -> interpretar -> email).
 const QUEUE_STAGES = [
   { key: 'DOWNLOAD', labelKey: 'queueDownload' },
-  { key: 'AI_SUMMARIZE', labelKey: 'queueAiSummarize' },
+  { key: 'SUMMARIZE', labelKey: 'queueSummarize' },
+  { key: 'REWRITE', labelKey: 'queueRewrite' },
   { key: 'INTERPRET_SUMMARY', labelKey: 'queueInterpretSummary' },
   { key: 'EMAIL', labelKey: 'queueEmail' },
 ];
@@ -58,7 +59,16 @@ export function SettingsDrawer() {
               </TabsList>
 
               <TabsContent value="llm" className="flex-1 overflow-y-auto p-6">
-                <LlmTab settings={settings} save={save} t={t} />
+                <div className="flex flex-col gap-6">
+                  <div>
+                    <h3 className="mb-3 text-sm font-semibold text-text">{t('llmStageSummarize')}</h3>
+                    <LlmTab stageKey="summarize" settings={settings} save={save} t={t} />
+                  </div>
+                  <div className="border-t border-border pt-6">
+                    <h3 className="mb-3 text-sm font-semibold text-text">{t('llmStageRewrite')}</h3>
+                    <LlmTab stageKey="rewrite" settings={settings} save={save} t={t} />
+                  </div>
+                </div>
               </TabsContent>
               <TabsContent value="queues" className="flex-1 overflow-y-auto p-6">
                 <QueuesTab settings={settings} save={save} t={t} />
@@ -89,12 +99,13 @@ function useSaveStatus() {
   return [status, run];
 }
 
-function LlmTab({ settings, save, t }) {
-  const [provider, setProvider] = useState(settings.llm.provider);
+function LlmTab({ stageKey, settings, save, t }) {
+  const stageSettings = settings.llm[stageKey];
+  const [provider, setProvider] = useState(stageSettings.provider);
   const [drafts, setDrafts] = useState(() => {
     const initial = {};
     for (const prov of PROVIDERS) {
-      const p = settings.llm.providers[prov];
+      const p = stageSettings.providers[prov];
       initial[prov] = { model: p.model || '', baseUrl: p.baseUrl || '', apiKey: '', hasKey: p.hasKey };
     }
     return initial;
@@ -118,7 +129,7 @@ function LlmTab({ settings, save, t }) {
       const res = await fetch('/api/settings/models', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ provider, apiKey: draft.apiKey || undefined, baseUrl: draft.baseUrl || undefined }),
+        body: JSON.stringify({ provider, stage: stageKey, apiKey: draft.apiKey || undefined, baseUrl: draft.baseUrl || undefined }),
       });
       const body = await res.json();
       if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
@@ -139,9 +150,9 @@ function LlmTab({ settings, save, t }) {
     run(async () => {
       const overridePatch = { model: draft.model, baseUrl: draft.baseUrl };
       if (draft.apiKey) overridePatch.apiKey = draft.apiKey;
-      const view = await save({ llm: { provider, overrides: { [provider]: overridePatch } } });
+      const view = await save({ llm: { [stageKey]: { provider, overrides: { [provider]: overridePatch } } } });
       // La key nunca vuelve del servidor: limpiamos el campo pero recordamos que YA hay una.
-      setDrafts((d) => ({ ...d, [provider]: { ...d[provider], apiKey: '', hasKey: view.llm.providers[provider].hasKey } }));
+      setDrafts((d) => ({ ...d, [provider]: { ...d[provider], apiKey: '', hasKey: view.llm[stageKey].providers[provider].hasKey } }));
     });
   }
 
