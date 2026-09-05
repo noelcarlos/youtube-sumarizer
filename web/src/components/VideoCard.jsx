@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { useTranslations } from 'next-intl';
+import { useLocale, useTranslations } from 'next-intl';
 import { Loader2, RotateCcw, Trash2, X } from 'lucide-react';
 import { STATIONS, stationClasses, currentLabelKey, isProcessing, isQueued } from '../stages.js';
 
@@ -9,6 +9,30 @@ function formatBytes(bytes) {
   if (!bytes) return '0 KB';
   if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+const RELATIVE_UNITS = [
+  ['year', 365 * 24 * 60 * 60],
+  ['month', 30 * 24 * 60 * 60],
+  ['day', 24 * 60 * 60],
+  ['hour', 60 * 60],
+  ['minute', 60],
+  ['second', 1],
+];
+
+/** Intl.RelativeTimeFormat, no una libreria — ya viene en el navegador y respeta el idioma
+ * activo solo (ES -> "hace 2 dias", EN -> "2 days ago") sin tener que mantener las cadenas de
+ * texto a mano en messages/es.json|en.json. */
+function formatRelativeTime(timestampMs, locale) {
+  if (!timestampMs) return null;
+  const diffSec = (timestampMs - Date.now()) / 1000;
+  const absSec = Math.abs(diffSec);
+  const rtf = new Intl.RelativeTimeFormat(locale, { numeric: 'auto' });
+  for (const [unit, secInUnit] of RELATIVE_UNITS) {
+    if (absSec >= secInUnit || unit === 'second') {
+      return rtf.format(Math.round(diffSec / secInUnit), unit);
+    }
+  }
 }
 
 const STATION_COLOR = {
@@ -34,6 +58,7 @@ function StatusDot({ video, processing }) {
 export function VideoCard({ video, onOpenReader }) {
   const t = useTranslations('VideoCard');
   const tStageLabel = useTranslations('StageLabel');
+  const locale = useLocale();
   const [requeuing, setRequeuing] = useState(false);
   const [requeued, setRequeued] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -168,6 +193,10 @@ export function VideoCard({ video, onOpenReader }) {
             {video.language && <span className="flex-shrink-0">· {video.language}</span>}
             {video.model && <span className="min-w-0 flex-1 truncate font-mono text-xs">· {video.model}</span>}
           </div>
+
+          {video.updatedAt && (
+            <div className="mt-0.5 text-xs text-muted">{formatRelativeTime(video.updatedAt, locale)}</div>
+          )}
 
           {processing && video.stage === 'AI_SUMMARIZE' && video.aiProgress && (
             <AiProgressBar progress={video.aiProgress} t={t} />
