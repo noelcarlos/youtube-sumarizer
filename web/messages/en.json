@@ -62,7 +62,7 @@
     "aiStepSummary": "generating short summary…",
     "aiStepRewrite": "rewriting — chunk {current}/{total}",
     "markRead": "mark as read",
-    "markUnread": "read",
+    "markUnread": "mark as unread",
     "markReadFailed": "Couldn't update: {error}"
   },
   "ReaderDrawer": {

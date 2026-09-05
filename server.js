@@ -526,10 +526,11 @@ const server = http.createServer(async (req, res) => {
                 if (v.bucket === 'error') e.lastError = await lastErrorFor(v.videoId);
                 return { ...e, ...activeInfoFor(v), readAt: readStatus[v.videoId] || null };
             }));
-            // Mas recientemente actualizado primero — no por etapa/orden alfabetico, para que lo
-            // que acaba de cambiar (termino, fallo, avanzo de etapa) aparezca arriba en vez de
-            // quedar enterrado entre el resto por el orden del videoId.
-            enriched.sort((a, b) => b.updatedAt - a.updatedAt);
+            // El que esta procesando de VERDAD ahora mismo, primero siempre — su fichero de
+            // entrada no se toca (mtime) hasta que termina, asi que por updatedAt solo podia
+            // aparecer en cualquier punto de la lista segun cuando se encolo, no segun que esta
+            // activo ahora. Entre los que no estan procesando, sigue ganando el mas reciente.
+            enriched.sort((a, b) => (b.processing - a.processing) || (b.updatedAt - a.updatedAt));
             return sendJson(res, 200, enriched);
         }
 
