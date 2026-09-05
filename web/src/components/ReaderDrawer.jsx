@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useLocale, useTranslations } from 'next-intl';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -159,8 +159,11 @@ function ActionBar({ videoId, data, t }) {
   const [requeuing, setRequeuing] = useState(false);
   const [notice, setNotice] = useState(null);
   // Estado local optimista, igual que en VideoCard.jsx — data.readAt viene de useVideoData(),
-  // que no se vuelve a pedir sola tras el toggle.
+  // que no se vuelve a pedir sola tras el toggle. El useEffect sincroniza si data.readAt cambia
+  // por fuera (por ejemplo, si esta misma tarjeta ya se habia marcado desde la grilla antes de
+  // abrir el drawer).
   const [readAt, setReadAt] = useState(data.readAt);
+  useEffect(() => { setReadAt(data.readAt); }, [data.readAt]);
   const [togglingRead, setTogglingRead] = useState(false);
 
   async function toggleRead() {

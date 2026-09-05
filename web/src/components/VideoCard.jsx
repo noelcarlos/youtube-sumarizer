@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useLocale, useTranslations } from 'next-intl';
 import { Check, Loader2, RotateCcw, Trash2, X } from 'lucide-react';
 import { STATIONS, stationClasses, currentLabelKey, isProcessing, isQueued } from '../stages.js';
@@ -42,8 +42,13 @@ export function VideoCard({ video, onOpenReader }) {
   const [deleted, setDeleted] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   // Estado local optimista: video.readAt viene del sondeo de useQueueState (hasta 1.5s de
-  // retraso) — sin esto, el boton tarda en reflejar el propio click que lo disparo.
+  // retraso) — sin esto, el boton tarda en reflejar el propio click que lo disparo. Pero
+  // useState(video.readAt) solo lee el prop UNA vez, al montar — si el toggle se hace desde el
+  // drawer de lectura (otra instancia, otro estado local), esta tarjeta se queda con el valor
+  // viejo para siempre porque nunca vuelve a mirar el prop. El useEffect de abajo es lo que la
+  // mantiene sincronizada con lo que de verdad diga el proximo sondeo.
   const [readAt, setReadAt] = useState(video.readAt);
+  useEffect(() => { setReadAt(video.readAt); }, [video.readAt]);
   const [togglingRead, setTogglingRead] = useState(false);
   const classes = stationClasses(video);
   const { key: labelKey, failed } = currentLabelKey(video);
