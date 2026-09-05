@@ -74,7 +74,7 @@
     "tabMarkdown": ".md",
     "tabTranscript": "Transcript",
     "noEmailYet": "This video hasn't been emailed yet.",
-    "emailPreviewNote": "Preview — the email's colors are always fixed (light background, dark text), so it looks the same in any inbox regardless of the recipient's theme.",
+    "emailPreviewNote": "Preview adapted to the app's theme — the email that actually gets sent always arrives with a light background and dark text, regardless of the recipient's theme.",
     "splitViewTitle": "Split view: YouTube + summary",
     "backToHalf": "Back to half width",
     "fullscreen": "Fullscreen",

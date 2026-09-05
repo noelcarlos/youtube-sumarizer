@@ -1,6 +1,7 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import { useTheme } from 'next-themes';
 import { useLocale, useTranslations } from 'next-intl';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -10,6 +11,26 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from './ui/tabs.jsx';
 import { YouTubePlayer } from './YouTubePlayer.jsx';
 import { useVideoData } from '../hooks/useVideoData.js';
 import { formatRelativeTime } from '../lib/relativeTime.js';
+
+/** El .html que de verdad se manda por correo tiene que quedarse SIEMPRE claro (ver EmailStage en
+ * resumir_video.js) — eso no se toca aqui. Esto es solo para la COPIA que se muestra en el iframe
+ * de este drawer: se inserta un <style> extra justo antes de </head>, con las mismas reglas que
+ * ya trae el email (mismos selectores, mismo !important) pero en oscuro — al ir DESPUES en el
+ * documento, gana el empate de especificidad+importancia contra los estilos originales, sin
+ * tener que tocar ni una linea del email real. */
+const EMAIL_PREVIEW_DARK_OVERRIDE = `
+<style>
+  body { background: #09090b !important; color: #d4d4d8 !important; }
+  .container { background: #18181b !important; }
+  .yt-link { color: #71717a !important; }
+  .yt-link:hover { color: #fafafa !important; }
+  h1, h2, a, strong { color: #fafafa !important; }
+  p, li { color: #d4d4d8 !important; }
+  hr { border-top-color: #27272a !important; }
+  .content img { background: #18181b !important; border-color: #27272a !important; }
+  .footer { color: #71717a !important; border-top-color: #27272a !important; }
+</style>
+`;
 
 /** 3 anchos, no 2: 'half' es la lectura normal (50vw escritorio, 100% movil), 'full' es modo foco
  * (100vw, solo texto, para leer sin distracciones), y 'split' tambien va a 100vw pero reparte el
@@ -99,6 +120,17 @@ function DrawerHeader({ videoId, data, mode, onModeChange, t }) {
 }
 
 function DrawerTabs({ data, t }) {
+  const { resolvedTheme } = useTheme();
+  // El iframe es un documento aparte — no hereda la clase .dark del resto de la app, asi que
+  // hay que decidir aqui mismo si le hace falta el override, e inyectarlo a mano.
+  const emailPreviewHtml = useMemo(() => {
+    if (!data.emailHtml) return null;
+    if (resolvedTheme !== 'dark') return data.emailHtml;
+    return data.emailHtml.includes('</head>')
+      ? data.emailHtml.replace('</head>', `${EMAIL_PREVIEW_DARK_OVERRIDE}</head>`)
+      : EMAIL_PREVIEW_DARK_OVERRIDE + data.emailHtml;
+  }, [data.emailHtml, resolvedTheme]);
+
   return (
     // "email" primero y por defecto: es la vista que mejor queda (el diseño 2026 que se hizo
     // para la plantilla de email), asi que es lo primero que se ve al abrir el drawer.
@@ -113,13 +145,14 @@ function DrawerTabs({ data, t }) {
       <TabsContent value="email" className="flex flex-1 flex-col overflow-hidden p-6">
         {data.emailHtml ? (
           <>
-            {/* El email en si SIEMPRE es fondo claro/texto oscuro, a proposito — asi llega a
-                cualquier bandeja de entrada sin importar el tema del sistema del destinatario.
-                Lo que cambia con el modo oscuro de la app es solo este marco alrededor: sin el,
-                el iframe blanco se ve como un hueco roto flotando en medio de un panel oscuro. */}
+            {/* El .html que de verdad se manda por correo SIEMPRE es claro, a proposito — asi
+                llega igual a cualquier bandeja de entrada sin importar el tema del destinatario
+                (ver EmailStage en resumir_video.js, eso no se toca). emailPreviewHtml es una
+                COPIA con un override oscuro inyectado solo para esta vista previa — el marco de
+                alrededor (este div) tambien ayuda a que no se vea como un hueco roto. */}
             <p className="mb-2 flex-shrink-0 text-xs text-muted">{t('emailPreviewNote')}</p>
             <div className="min-h-0 flex-1 rounded-xl border border-border bg-card p-3 shadow-[var(--shadow-soft)]">
-              <iframe title="Email preview" srcDoc={data.emailHtml} className="h-full w-full rounded-lg" />
+              <iframe title="Email preview" srcDoc={emailPreviewHtml} className="h-full w-full rounded-lg" />
             </div>
           </>
         ) : (

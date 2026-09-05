@@ -74,7 +74,7 @@
     "tabMarkdown": ".md",
     "tabTranscript": "Transcripción",
     "noEmailYet": "Este vídeo todavía no se ha enviado por email.",
-    "emailPreviewNote": "Vista previa — los colores del email son siempre fijos (fondo claro, texto oscuro), así llega igual a cualquier bandeja de entrada sin importar el tema del destinatario.",
+    "emailPreviewNote": "Vista previa adaptada al tema de la app — el email que de verdad se envía siempre llega con fondo claro y texto oscuro, sin importar el tema del destinatario.",
     "splitViewTitle": "Vista dividida: YouTube + resumen",
     "backToHalf": "Volver a la mitad",
     "fullscreen": "Pantalla completa",
