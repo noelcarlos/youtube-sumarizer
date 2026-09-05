@@ -11,7 +11,10 @@
   "Queue": {
     "serverError": "Couldn't reach the server: {error}",
     "emptyAll": "Nothing in the queue yet. Paste a URL above to get started.",
-    "emptyTab": "Nothing in this tab."
+    "emptyTab": "Nothing in this tab.",
+    "readFilterAll": "All",
+    "readFilterUnread": "Unread",
+    "readFilterRead": "Read"
   },
   "EnqueueForm": {
     "placeholder": "paste a YouTube URL (or several, comma-separated)",
@@ -57,7 +60,10 @@
     "cancelling": "cancelling…",
     "cancelFailed": "Couldn't cancel: {error}",
     "aiStepSummary": "generating short summary…",
-    "aiStepRewrite": "rewriting — chunk {current}/{total}"
+    "aiStepRewrite": "rewriting — chunk {current}/{total}",
+    "markRead": "mark as read",
+    "markUnread": "read",
+    "markReadFailed": "Couldn't update: {error}"
   },
   "ReaderDrawer": {
     "loading": "Loading…",
@@ -68,6 +74,7 @@
     "tabMarkdown": ".md",
     "tabTranscript": "Transcript",
     "noEmailYet": "This video hasn't been emailed yet.",
+    "emailPreviewNote": "Preview — the email's colors are always fixed (light background, dark text), so it looks the same in any inbox regardless of the recipient's theme.",
     "splitViewTitle": "Split view: YouTube + summary",
     "backToHalf": "Back to half width",
     "fullscreen": "Fullscreen",

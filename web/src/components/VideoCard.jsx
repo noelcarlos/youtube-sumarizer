@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { useLocale, useTranslations } from 'next-intl';
-import { Loader2, RotateCcw, Trash2, X } from 'lucide-react';
+import { Check, Circle, Loader2, RotateCcw, Trash2, X } from 'lucide-react';
 import { STATIONS, stationClasses, currentLabelKey, isProcessing, isQueued } from '../stages.js';
 
 function formatBytes(bytes) {
@@ -64,6 +64,10 @@ export function VideoCard({ video, onOpenReader }) {
   const [deleting, setDeleting] = useState(false);
   const [deleted, setDeleted] = useState(false);
   const [cancelling, setCancelling] = useState(false);
+  // Estado local optimista: video.readAt viene del sondeo de useQueueState (hasta 1.5s de
+  // retraso) — sin esto, el boton tarda en reflejar el propio click que lo disparo.
+  const [readAt, setReadAt] = useState(video.readAt);
+  const [togglingRead, setTogglingRead] = useState(false);
   const classes = stationClasses(video);
   const { key: labelKey, failed } = currentLabelKey(video);
   const label = failed
@@ -72,6 +76,20 @@ export function VideoCard({ video, onOpenReader }) {
   const processing = isProcessing(video);
   const queued = isQueued(video);
   const isError = video.bucket === 'error';
+
+  async function toggleRead() {
+    setTogglingRead(true);
+    try {
+      const res = await fetch(`/api/videos/${video.videoId}/read`, { method: readAt ? 'DELETE' : 'POST' });
+      if (!res.ok) throw new Error(await res.text());
+      const body = await res.json();
+      setReadAt(body.readAt);
+    } catch (err) {
+      alert(t('markReadFailed', { error: err.message }));
+    } finally {
+      setTogglingRead(false);
+    }
+  }
 
   async function cancel() {
     setCancelling(true);
@@ -236,6 +254,20 @@ export function VideoCard({ video, onOpenReader }) {
               </button>
             )}
             {requeued && <span className="text-sm text-success">{t('reprocessingNotice')}</span>}
+            {video.stage === 'DONE' && (
+              <button
+                onClick={toggleRead}
+                disabled={togglingRead}
+                title={readAt ? formatRelativeTime(new Date(readAt).getTime(), locale) : undefined}
+                className={
+                  'flex items-center gap-1 text-sm transition-colors disabled:opacity-60 ' +
+                  (readAt ? 'text-success hover:text-muted' : 'text-muted hover:text-text')
+                }
+              >
+                {readAt ? <Check size={12} /> : <Circle size={12} />}
+                {readAt ? t('markUnread') : t('markRead')}
+              </button>
+            )}
             {isError && (
               <button
                 onClick={deleteVideo}

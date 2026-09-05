@@ -70,6 +70,29 @@ async function persistSettings() {
     await fs.writeFile(SETTINGS_PATH, JSON.stringify(settings, null, 2));
 }
 
+// ==========================================================
+// "LEIDO" — flag manual por video, para simular haber abierto el resumen en la web sin tener
+// que abrirlo de verdad. Vive en su propio fichero (no dentro de settings.json) porque es
+// metadata POR VIDEO que puede crecer a cientos de entradas, no configuracion global — mismo
+// principio de "el estado vive en disco, no en una base de datos aparte" que ya usa todo lo
+// demas. { [videoId]: "<ISO timestamp de cuando se marco>" } — ausente = no leido.
+// ==========================================================
+
+const READ_STATUS_PATH = path.join('pipeline-data', 'read-status.json');
+
+async function loadReadStatus() {
+    try {
+        return JSON.parse(await fs.readFile(READ_STATUS_PATH, 'utf8'));
+    } catch {
+        return {};
+    }
+}
+
+const readStatus = await loadReadStatus();
+async function persistReadStatus() {
+    await fs.writeFile(READ_STATUS_PATH, JSON.stringify(readStatus, null, 2));
+}
+
 // `paused` es el MISMO objeto que settings.paused (no una copia): los workers cierran sobre
 // esta referencia, asi que mutar sus propiedades desde /api/settings basta para pausarlos o
 // reanudarlos sin tener que volver a arrancar nada.
@@ -501,7 +524,7 @@ const server = http.createServer(async (req, res) => {
             const enriched = await Promise.all(state.map(async (v) => {
                 const e = await enrichVideo(v);
                 if (v.bucket === 'error') e.lastError = await lastErrorFor(v.videoId);
-                return { ...e, ...activeInfoFor(v) };
+                return { ...e, ...activeInfoFor(v), readAt: readStatus[v.videoId] || null };
             }));
             // Mas recientemente actualizado primero — no por etapa/orden alfabetico, para que lo
             // que acaba de cambiar (termino, fallo, avanzo de etapa) aparezca arriba en vez de
@@ -616,6 +639,20 @@ const server = http.createServer(async (req, res) => {
             } catch (err) {
                 return sendJson(res, err.status || 500, { error: err.message });
             }
+        }
+
+        if (req.method === 'POST' && url.pathname.startsWith('/api/videos/') && url.pathname.endsWith('/read')) {
+            const videoId = url.pathname.split('/')[3];
+            readStatus[videoId] = new Date().toISOString();
+            await persistReadStatus();
+            return sendJson(res, 200, { videoId, readAt: readStatus[videoId] });
+        }
+
+        if (req.method === 'DELETE' && url.pathname.startsWith('/api/videos/') && url.pathname.endsWith('/read')) {
+            const videoId = url.pathname.split('/')[3];
+            delete readStatus[videoId];
+            await persistReadStatus();
+            return sendJson(res, 200, { videoId, readAt: null });
         }
 
         if (req.method === 'DELETE' && url.pathname.startsWith('/api/videos/')) {

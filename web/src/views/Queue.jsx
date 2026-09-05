@@ -15,8 +15,14 @@ export function Queue() {
   const t = useTranslations('Queue');
   const { videos, error, loading } = useQueueState();
   const [tab, setTab] = useState('ALL');
+  const [readFilter, setReadFilter] = useState('all'); // 'all' | 'unread' | 'read' — solo aplica dentro de Done
   const [readerVideoId, setReaderVideoId] = useState(null);
-  const visible = videos.filter((v) => matchesTab(v, tab));
+  const visible = videos
+    .filter((v) => matchesTab(v, tab))
+    .filter((v) => {
+      if (tab !== 'DONE' || readFilter === 'all') return true;
+      return readFilter === 'read' ? Boolean(v.readAt) : !v.readAt;
+    });
   const activeCount = videos.filter(isProcessing).length;
 
   return (
@@ -35,6 +41,7 @@ export function Queue() {
 
         <EnqueueForm onEnqueued={() => {}} />
         <StageTabs videos={videos} active={tab} onChange={setTab} />
+        {tab === 'DONE' && <ReadFilter videos={videos} active={readFilter} onChange={setReadFilter} />}
 
         {loading ? (
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
@@ -90,5 +97,34 @@ function StatusBadge({ activeCount }) {
       </span>
       {active ? t('processing', { count: activeCount }) : t('idle')}
     </span>
+  );
+}
+
+/** Sub-filtro dentro de Done, no una pestaña propia — "leido" es una anotacion manual sobre un
+ * video ya terminado (para simular haberlo abierto), no una etapa mas del pipeline. */
+function ReadFilter({ videos, active, onChange }) {
+  const t = useTranslations('Queue');
+  const done = videos.filter((v) => v.stage === 'DONE');
+  const counts = {
+    all: done.length,
+    unread: done.filter((v) => !v.readAt).length,
+    read: done.filter((v) => v.readAt).length,
+  };
+  return (
+    <div className="-mt-3 mb-6 flex flex-wrap gap-1.5 rounded-xl border border-border bg-secondary/50 p-1.5">
+      {['all', 'unread', 'read'].map((key) => (
+        <button
+          key={key}
+          onClick={() => onChange(key)}
+          className={
+            'flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium transition-colors ' +
+            (active === key ? 'bg-primary text-primary-foreground' : 'text-muted hover:bg-accent hover:text-text')
+          }
+        >
+          {t(`readFilter${key.charAt(0).toUpperCase()}${key.slice(1)}`)}
+          <span className="font-mono">{counts[key]}</span>
+        </button>
+      ))}
+    </div>
   );
 }

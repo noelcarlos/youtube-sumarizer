@@ -11,7 +11,10 @@
   "Queue": {
     "serverError": "No se pudo hablar con el servidor: {error}",
     "emptyAll": "Nada en cola todavía. Pega una URL arriba para empezar.",
-    "emptyTab": "Nada en esta pestaña."
+    "emptyTab": "Nada en esta pestaña.",
+    "readFilterAll": "Todos",
+    "readFilterUnread": "Sin leer",
+    "readFilterRead": "Leídos"
   },
   "EnqueueForm": {
     "placeholder": "pega una URL de YouTube (o varias separadas por coma)",
@@ -57,7 +60,10 @@
     "cancelling": "cancelando…",
     "cancelFailed": "No se pudo cancelar: {error}",
     "aiStepSummary": "generando resumen corto…",
-    "aiStepRewrite": "reescribiendo — chunk {current}/{total}"
+    "aiStepRewrite": "reescribiendo — chunk {current}/{total}",
+    "markRead": "marcar como leído",
+    "markUnread": "leído",
+    "markReadFailed": "No se pudo actualizar: {error}"
   },
   "ReaderDrawer": {
     "loading": "Cargando…",
@@ -68,6 +74,7 @@
     "tabMarkdown": ".md",
     "tabTranscript": "Transcripción",
     "noEmailYet": "Este vídeo todavía no se ha enviado por email.",
+    "emailPreviewNote": "Vista previa — los colores del email son siempre fijos (fondo claro, texto oscuro), así llega igual a cualquier bandeja de entrada sin importar el tema del destinatario.",
     "splitViewTitle": "Vista dividida: YouTube + resumen",
     "backToHalf": "Volver a la mitad",
     "fullscreen": "Pantalla completa",

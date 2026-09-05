@@ -109,9 +109,18 @@ function DrawerTabs({ data, t }) {
         <TabsTrigger value="transcripcion">{t('tabTranscript')}</TabsTrigger>
       </TabsList>
 
-      <TabsContent value="email" className="flex-1 overflow-hidden p-6">
+      <TabsContent value="email" className="flex flex-1 flex-col overflow-hidden p-6">
         {data.emailHtml ? (
-          <iframe title="Email preview" srcDoc={data.emailHtml} className="h-full w-full rounded-xl border border-border" />
+          <>
+            {/* El email en si SIEMPRE es fondo claro/texto oscuro, a proposito — asi llega a
+                cualquier bandeja de entrada sin importar el tema del sistema del destinatario.
+                Lo que cambia con el modo oscuro de la app es solo este marco alrededor: sin el,
+                el iframe blanco se ve como un hueco roto flotando en medio de un panel oscuro. */}
+            <p className="mb-2 flex-shrink-0 text-xs text-muted">{t('emailPreviewNote')}</p>
+            <div className="min-h-0 flex-1 rounded-xl border border-border bg-card p-3 shadow-[var(--shadow-soft)]">
+              <iframe title="Email preview" srcDoc={data.emailHtml} className="h-full w-full rounded-lg" />
+            </div>
+          </>
         ) : (
           <p className="text-sm text-muted">{t('noEmailYet')}</p>
         )}
