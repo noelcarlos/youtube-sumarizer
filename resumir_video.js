@@ -1745,46 +1745,72 @@ export class EmailStage extends BaseStage {
     <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!-- Gmail, Apple Mail y Outlook.com "adivinan" un tema oscuro para el email y reescriben los
+         colores por su cuenta si no les dices lo contrario — estas dos lineas son las que
+         reconocen la mayoria de clientes para decir "este email YA esta diseñado, no lo toques". -->
+    <meta name="color-scheme" content="light only">
+    <meta name="supported-color-schemes" content="light only">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
     <style>
         body {
-            margin: 0; padding: 32px 16px; background: #FAFAFA;
+            margin: 0; padding: 32px 16px; background: #FAFAFA !important;
             font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
-            color: #3F3F46;
+            color: #3F3F46 !important;
         }
         .mono { font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-        .container { background: #FFFFFF; max-width: 600px; margin: 0 auto; border-radius: 16px; padding: 32px; }
+        .container { background: #FFFFFF !important; max-width: 600px; margin: 0 auto; border-radius: 16px; padding: 32px; }
         .thumb-link { display: block; }
         .thumb { width: 100%; border-radius: 12px; display: block; }
         .yt-link {
-            display: inline-block; margin-top: 16px; font-size: 13px; color: #71717A;
+            display: inline-block; margin-top: 16px; font-size: 13px; color: #71717A !important;
             text-decoration: none; letter-spacing: 0.01em;
         }
-        .yt-link:hover { color: #18181B; }
-        h1 { font-size: 28px; font-weight: 700; letter-spacing: -0.01em; color: #18181B; margin: 16px 0 8px; }
-        h2 { font-size: 20px; font-weight: 600; color: #18181B; margin: 32px 0 12px; }
-        p { font-size: 15px; line-height: 26px; color: #3F3F46; margin: 0 0 16px; }
+        .yt-link:hover { color: #18181B !important; }
+        h1 { font-size: 28px; font-weight: 700; letter-spacing: -0.01em; color: #18181B !important; margin: 16px 0 8px; }
+        h2 { font-size: 20px; font-weight: 600; color: #18181B !important; margin: 32px 0 12px; }
+        p { font-size: 15px; line-height: 26px; color: #3F3F46 !important; margin: 0 0 16px; }
         ul, ol { padding-left: 20px; margin: 0 0 16px; }
-        li { font-size: 15px; line-height: 26px; color: #3F3F46; margin-bottom: 12px; }
-        a { color: #18181B; }
-        strong { color: #18181B; font-weight: 600; }
+        li { font-size: 15px; line-height: 26px; color: #3F3F46 !important; margin-bottom: 12px; }
+        a { color: #18181B !important; }
+        strong { color: #18181B !important; font-weight: 600; }
         hr { border: none; border-top: 1px solid #E4E4E7; margin: 28px 0; }
         /* Cualquier imagen dentro del contenido (diagramas, capturas) va en una card con borde,
            en vez de suelta a ancho completo — esto cubre el diagrama RAG y cualquier otro. */
         .content img {
             display: block; max-width: 100%; border: 1px solid #E4E4E7; border-radius: 12px;
-            padding: 8px; background: #FFFFFF; margin: 8px 0 16px;
+            padding: 8px; background: #FFFFFF !important; margin: 8px 0 16px;
         }
         .footer {
             margin-top: 40px; padding-top: 20px; border-top: 1px solid #E4E4E7;
-            font-size: 11px; color: #A1A1AA;
+            font-size: 11px; color: #A1A1AA !important;
         }
         @media (max-width: 480px) {
             body { padding: 16px 8px; }
             .container { padding: 20px; border-radius: 12px; }
             h1 { font-size: 24px; }
             h2 { font-size: 18px; }
+        }
+        /* Apple Mail y algunos clientes ignoran las meta tags de arriba y aplican su propio
+           "smart dark mode" via esta media query — reafirmar los MISMOS colores claros aqui
+           adentro, con !important, es lo que realmente los neutraliza (en vez de dejarles la
+           puerta abierta a adivinar el negativo de cada color ellos solos). */
+        @media (prefers-color-scheme: dark) {
+            body { background: #FAFAFA !important; color: #3F3F46 !important; }
+            .container { background: #FFFFFF !important; }
+            .yt-link { color: #71717A !important; }
+            .yt-link:hover { color: #18181B !important; }
+            h1, h2, a, strong { color: #18181B !important; }
+            p, li { color: #3F3F46 !important; }
+            .content img { background: #FFFFFF !important; }
+            .footer { color: #A1A1AA !important; }
+        }
+        /* Outlook.com (web) marca los elementos que reescribio en modo oscuro con estos
+           atributos generados — pisarlos de vuelta a los colores reales es el unico gancho
+           documentado para ese cliente en concreto. */
+        [data-ogsc] body, [data-ogsc] .container { background: #FFFFFF !important; }
+        [data-ogsc] h1, [data-ogsc] h2, [data-ogsc] p, [data-ogsc] li, [data-ogsc] a, [data-ogsc] strong {
+            color: #18181B !important;
         }
     </style>
     </head>

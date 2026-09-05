@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { useLocale, useTranslations } from 'next-intl';
-import { Check, Circle, Loader2, RotateCcw, Trash2, X } from 'lucide-react';
+import { Check, Loader2, RotateCcw, Trash2, X } from 'lucide-react';
 import { STATIONS, stationClasses, currentLabelKey, isProcessing, isQueued } from '../stages.js';
 
 function formatBytes(bytes) {
@@ -258,13 +258,19 @@ export function VideoCard({ video, onOpenReader }) {
               <button
                 onClick={toggleRead}
                 disabled={togglingRead}
-                title={readAt ? formatRelativeTime(new Date(readAt).getTime(), locale) : undefined}
-                className={
-                  'flex items-center gap-1 text-sm transition-colors disabled:opacity-60 ' +
-                  (readAt ? 'text-success hover:text-muted' : 'text-muted hover:text-text')
-                }
+                role="checkbox"
+                aria-checked={Boolean(readAt)}
+                title={readAt ? formatRelativeTime(new Date(readAt).getTime(), locale) : t('markRead')}
+                className="flex items-center gap-1.5 text-sm text-muted transition-colors hover:text-text disabled:opacity-60"
               >
-                {readAt ? <Check size={12} /> : <Circle size={12} />}
+                <span
+                  className={
+                    'flex h-4 w-4 flex-shrink-0 items-center justify-center rounded border transition-colors ' +
+                    (readAt ? 'border-success bg-success text-white' : 'border-border bg-card')
+                  }
+                >
+                  {readAt && <Check size={11} strokeWidth={3} />}
+                </span>
                 {readAt ? t('markUnread') : t('markRead')}
               </button>
             )}
