@@ -580,6 +580,7 @@ const server = http.createServer(async (req, res) => {
                     fullContent: enriched.fullContent || '',
                     markdown: enriched.markdown || '',
                     emailHtml, // null si aun no se ha enviado
+                    readAt: readStatus[videoId] || null,
                 });
             }
 

@@ -86,7 +86,10 @@
     "emailResent": "Email resent.",
     "sendFailed": "Couldn't send: {error}",
     "requeuedNotice": "Requeued — the worker will pick it up on its own.",
-    "reprocessFailed": "Couldn't reprocess: {error}"
+    "reprocessFailed": "Couldn't reprocess: {error}",
+    "markRead": "mark as read",
+    "markUnread": "mark as unread",
+    "markReadFailed": "Couldn't update: {error}"
   },
   "LanguageSwitcher": {
     "label": "Language"

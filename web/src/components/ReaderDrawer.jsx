@@ -1,14 +1,15 @@
 'use client';
 
 import { useState } from 'react';
-import { useTranslations } from 'next-intl';
+import { useLocale, useTranslations } from 'next-intl';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { Columns2, Copy, Loader2, Maximize2, Minimize2, RotateCcw, Send } from 'lucide-react';
+import { Check, Columns2, Copy, Loader2, Maximize2, Minimize2, RotateCcw, Send } from 'lucide-react';
 import { Sheet, SheetContent } from './ui/sheet.jsx';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from './ui/tabs.jsx';
 import { YouTubePlayer } from './YouTubePlayer.jsx';
 import { useVideoData } from '../hooks/useVideoData.js';
+import { formatRelativeTime } from '../lib/relativeTime.js';
 
 /** 3 anchos, no 2: 'half' es la lectura normal (50vw escritorio, 100% movil), 'full' es modo foco
  * (100vw, solo texto, para leer sin distracciones), y 'split' tambien va a 100vw pero reparte el
@@ -152,10 +153,29 @@ function Prose({ children }) {
 }
 
 function ActionBar({ videoId, data, t }) {
+  const locale = useLocale();
   const [sending, setSending] = useState(false);
   const [copied, setCopied] = useState(false);
   const [requeuing, setRequeuing] = useState(false);
   const [notice, setNotice] = useState(null);
+  // Estado local optimista, igual que en VideoCard.jsx — data.readAt viene de useVideoData(),
+  // que no se vuelve a pedir sola tras el toggle.
+  const [readAt, setReadAt] = useState(data.readAt);
+  const [togglingRead, setTogglingRead] = useState(false);
+
+  async function toggleRead() {
+    setTogglingRead(true);
+    try {
+      const res = await fetch(`/api/videos/${videoId}/read`, { method: readAt ? 'DELETE' : 'POST' });
+      if (!res.ok) throw new Error(await res.text());
+      const body = await res.json();
+      setReadAt(body.readAt);
+    } catch (err) {
+      setNotice(t('markReadFailed', { error: err.message }));
+    } finally {
+      setTogglingRead(false);
+    }
+  }
 
   async function sendEmail() {
     setSending(true);
@@ -193,7 +213,27 @@ function ActionBar({ videoId, data, t }) {
 
   return (
     <div className="flex items-center justify-between gap-3 border-t border-border bg-card px-6 py-3">
-      <span className="text-sm text-muted">{notice}</span>
+      <div className="flex min-w-0 items-center gap-3">
+        <button
+          onClick={toggleRead}
+          disabled={togglingRead}
+          role="checkbox"
+          aria-checked={Boolean(readAt)}
+          title={readAt ? formatRelativeTime(new Date(readAt).getTime(), locale) : t('markRead')}
+          className="flex flex-shrink-0 items-center gap-1.5 text-sm text-muted transition-colors hover:text-text disabled:opacity-60"
+        >
+          <span
+            className={
+              'flex h-4 w-4 flex-shrink-0 items-center justify-center rounded border transition-colors ' +
+              (readAt ? 'border-success bg-success text-white' : 'border-border bg-card')
+            }
+          >
+            {readAt && <Check size={11} strokeWidth={3} />}
+          </span>
+          {readAt ? t('markUnread') : t('markRead')}
+        </button>
+        <span className="truncate text-sm text-muted">{notice}</span>
+      </div>
       <div className="flex flex-shrink-0 gap-2">
         <button
           onClick={reprocess}

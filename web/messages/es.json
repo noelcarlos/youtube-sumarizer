@@ -86,7 +86,10 @@
     "emailResent": "Email reenviado.",
     "sendFailed": "No se pudo enviar: {error}",
     "requeuedNotice": "Reencolado — el worker lo recogerá solo.",
-    "reprocessFailed": "No se pudo reprocesar: {error}"
+    "reprocessFailed": "No se pudo reprocesar: {error}",
+    "markRead": "marcar como leído",
+    "markUnread": "marcar como no leído",
+    "markReadFailed": "No se pudo actualizar: {error}"
   },
   "LanguageSwitcher": {
     "label": "Idioma"
