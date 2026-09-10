@@ -4,10 +4,10 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useLocale, useTranslations } from 'next-intl';
-import { LayoutGrid, MonitorPlay } from 'lucide-react';
+import { LayoutGrid, MonitorPlay, Settings as SettingsIcon } from 'lucide-react';
 import { LanguageSwitcher } from './LanguageSwitcher.jsx';
 import { ThemeToggle } from './ThemeToggle.jsx';
-import { SettingsDrawer } from './SettingsDrawer.jsx';
+import { Logo } from './Logo.jsx';
 
 /** Cabecera compartida entre "/" (cola) y "/subscriptions" — antes Suscripciones era un
  * drawer que se ensanchaba a pantalla completa y tapaba esto mismo; ahora es una pagina propia
@@ -16,13 +16,17 @@ import { SettingsDrawer } from './SettingsDrawer.jsx';
  * por ejemplo) — Suscripciones no pasa nada y se queda vacio. */
 export function AppHeader({ center }) {
   const t = useTranslations('AppHeader');
+  const tSettings = useTranslations('SettingsDrawer');
   const pathname = usePathname();
 
   return (
     <header className="sticky top-0 z-10 w-full border-b border-border bg-card/80 backdrop-blur-sm">
       <div className="flex w-full items-center justify-between gap-3 px-4 py-3 sm:px-6">
         <div className="flex min-w-0 items-center gap-2 sm:gap-3">
-          <h1 className="truncate text-base font-bold tracking-tight text-text lowercase">youtube-sumarizer</h1>
+          <Link href="/" className="flex flex-shrink-0 items-center gap-2">
+            <Logo size={26} />
+            <h1 className="hidden truncate font-serif text-base font-semibold tracking-tight text-text lowercase sm:block">youtube-sumarizer</h1>
+          </Link>
           <nav className="flex flex-shrink-0 items-center gap-0.5 rounded-full border border-border bg-secondary p-0.5">
             <Link
               href="/"
@@ -49,7 +53,15 @@ export function AppHeader({ center }) {
           <Clock />
           <ThemeToggle />
           <LanguageSwitcher />
-          <SettingsDrawer />
+          <Link
+            href="/settings"
+            title={tSettings('openTitle')}
+            aria-label={tSettings('openTitle')}
+            className={'flex flex-shrink-0 items-center justify-center rounded-full p-1.5 transition-colors ' +
+              (pathname === '/settings' ? 'bg-primary text-primary-foreground' : 'text-muted hover:bg-accent hover:text-text')}
+          >
+            <SettingsIcon size={16} />
+          </Link>
         </div>
       </div>
     </header>

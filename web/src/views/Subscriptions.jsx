@@ -7,6 +7,7 @@ import { Loader2, RotateCcw, Search, Send, X, MonitorPlay } from 'lucide-react';
 import { AppHeader } from '../components/AppHeader.jsx';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select.jsx';
 import { YouTubePlayer } from '../components/YouTubePlayer.jsx';
+import { useConfirmDialog } from '../components/ConfirmDialog.jsx';
 
 const PAGE_SIZE = 20;
 const DATE_RANGES = ['all', 'day', 'week', 'month'];
@@ -18,12 +19,14 @@ const RANGE_MS = { day: 24 * 60 * 60 * 1000, week: 7 * 24 * 60 * 60 * 1000, mont
  * que en la cola. */
 export function Subscriptions() {
   const t = useTranslations('SubscriptionsDrawer');
+  const { confirm: confirmDialog, ConfirmDialog } = useConfirmDialog();
   const { data: session, status } = useSession();
   const [previewVideo, setPreviewVideo] = useState(null);
   const isReady = status === 'authenticated' && !session?.error;
 
   return (
     <div className="flex min-h-screen w-full flex-col bg-bg">
+      {ConfirmDialog}
       <AppHeader />
 
       {status === 'loading' && (
@@ -38,7 +41,7 @@ export function Subscriptions() {
           <p className="text-sm text-muted">{session?.error ? t('reauthNeeded') : t('connectIntro')}</p>
           <button
             onClick={() => signIn('google')}
-            className="rounded-xl bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary-hover"
+            className="rounded-sm bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary-hover"
           >
             {t('connect')}
           </button>
@@ -105,7 +108,7 @@ function PlayerPanel({ video, onClose, t }) {
         <button
           onClick={enqueue}
           disabled={enqueued}
-          className="flex items-center gap-2 rounded-xl bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary-hover disabled:opacity-60"
+          className="flex items-center gap-2 rounded-sm bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary-hover disabled:opacity-60"
         >
           <Send size={14} />
           {enqueued ? t('enqueued') : t('enqueue')}
@@ -314,7 +317,7 @@ function VideoList({ t, selectedId, onSelect }) {
           el icono equivocado obliga a repetir todo el login de Google por nada. */}
       <div className="border-t border-border px-6 py-3">
         <button
-          onClick={() => { if (confirm(t('disconnectConfirm'))) signOut(); }}
+          onClick={async () => { if (await confirmDialog(t('disconnectConfirm'))) signOut(); }}
           className="text-xs text-muted underline-offset-2 hover:text-text hover:underline"
         >
           {t('disconnect')}

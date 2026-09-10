@@ -5,7 +5,7 @@
 export function YouTubePlayer({ videoId, className = '' }) {
   if (!videoId) return null;
   return (
-    <div className={`aspect-video w-full overflow-hidden rounded-xl bg-black ${className}`}>
+    <div className={`aspect-video w-full overflow-hidden rounded-sm bg-black ${className}`}>
       <iframe
         className="h-full w-full"
         src={`https://www.youtube-nocookie.com/embed/${videoId}?autoplay=0`}

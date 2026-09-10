@@ -5,12 +5,13 @@ import { useTheme } from 'next-themes';
 import { useLocale, useTranslations } from 'next-intl';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { Check, Columns2, Copy, Loader2, Maximize2, Minimize2, RotateCcw, Send } from 'lucide-react';
+import { Check, Columns2, Copy, FastForward, Loader2, Maximize2, Minimize2, RotateCcw, Send } from 'lucide-react';
 import { Sheet, SheetContent } from './ui/sheet.jsx';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from './ui/tabs.jsx';
 import { YouTubePlayer } from './YouTubePlayer.jsx';
 import { useVideoData } from '../hooks/useVideoData.js';
 import { formatRelativeTime } from '../lib/relativeTime.js';
+import { useConfirmDialog } from './ConfirmDialog.jsx';
 
 /** El .html que de verdad se manda por correo tiene que quedarse SIEMPRE claro (ver EmailStage en
  * resumir_video.js) — eso no se toca aqui. Esto es solo para la COPIA que se muestra en el iframe
@@ -20,15 +21,19 @@ import { formatRelativeTime } from '../lib/relativeTime.js';
  * tener que tocar ni una linea del email real. */
 const EMAIL_PREVIEW_DARK_OVERRIDE = `
 <style>
-  body { background: #09090b !important; color: #d4d4d8 !important; }
-  .container { background: #18181b !important; }
-  .yt-link { color: #71717a !important; }
-  .yt-link:hover { color: #fafafa !important; }
-  h1, h2, a, strong { color: #fafafa !important; }
-  p, li { color: #d4d4d8 !important; }
-  hr { border-top-color: #27272a !important; }
-  .content img { background: #18181b !important; border-color: #27272a !important; }
-  .footer { color: #71717a !important; border-top-color: #27272a !important; }
+  body { background: #14141f !important; color: #ededf5 !important; }
+  .container { background: #1c1c2b !important; border-color: #2e2e42 !important; }
+  .container-full { background: #262636 !important; border: 1px solid #40405a !important; }
+  .transcript-note { color: #9494ac !important; }
+  .yt-link { color: #a296ff !important; }
+  .yt-link:hover { color: #cbc4ff !important; }
+  h1, h2, strong { color: #ededf5 !important; }
+  a { color: #a296ff !important; }
+  p, li { color: #cbcbdd !important; }
+  hr { border-top-color: #2e2e42 !important; }
+  .content img { background: #1c1c2b !important; border-color: #40405a !important; }
+  .footer { color: #9494ac !important; border-top-color: #40405a !important; }
+  .footer-tag { background: #1c1c2b !important; border-color: #40405a !important; color: #a296ff !important; }
 </style>
 `;
 
@@ -84,33 +89,48 @@ export function ReaderDrawer({ videoId, onClose }) {
 function DrawerHeader({ videoId, data, mode, onModeChange, t }) {
   return (
     <div className="flex items-start justify-between gap-4 border-b border-border px-6 py-4">
-      <div className="min-w-0">
-        <h2 className="truncate text-lg font-semibold tracking-tight text-text">
-          {data?.title || t('loading')}
-        </h2>
+      <div className="flex min-w-0 items-center gap-3">
+        {/* La miniatura no depende de ninguna etapa del pipeline (la URL de YouTube es
+            predecible desde el propio videoId) — no habia ninguna razon para que faltara aqui
+            solo porque el resto del drawer si depende de Resumen/Rewrite/Fusion. */}
         {videoId && (
-          <a
-            href={`https://www.youtube.com/watch?v=${videoId}`}
-            target="_blank"
-            rel="noreferrer"
-            className="font-mono text-xs text-muted hover:text-text"
-          >
-            {t('watchOnYoutube')}
-          </a>
+          <img
+            src={`https://img.youtube.com/vi/${videoId}/hqdefault.jpg`}
+            alt=""
+            width={80}
+            height={45}
+            className="h-[45px] w-[80px] flex-shrink-0 rounded-sm border border-border object-cover"
+            onError={(e) => { e.currentTarget.style.visibility = 'hidden'; }}
+          />
         )}
+        <div className="min-w-0">
+          <h2 className="truncate font-serif text-lg font-medium tracking-tight text-text">
+            {data?.title || t('loading')}
+          </h2>
+          {videoId && (
+            <a
+              href={`https://www.youtube.com/watch?v=${videoId}`}
+              target="_blank"
+              rel="noreferrer"
+              className="font-mono text-xs text-muted hover:text-text"
+            >
+              {t('watchOnYoutube')}
+            </a>
+          )}
+        </div>
       </div>
       <div className="flex flex-shrink-0 items-center gap-1 pr-8">
         <button
           onClick={() => onModeChange(mode === 'split' ? 'half' : 'split')}
           title={t('splitViewTitle')}
-          className={`rounded-lg p-2 transition-colors ${mode === 'split' ? 'bg-accent text-text' : 'text-muted hover:bg-accent hover:text-text'}`}
+          className={`rounded-sm p-2 transition-colors ${mode === 'split' ? 'bg-accent text-text' : 'text-muted hover:bg-accent hover:text-text'}`}
         >
           <Columns2 size={16} />
         </button>
         <button
           onClick={() => onModeChange(mode === 'full' ? 'half' : 'full')}
           title={mode === 'full' ? t('backToHalf') : t('fullscreen')}
-          className={`rounded-lg p-2 transition-colors ${mode === 'full' ? 'bg-accent text-text' : 'text-muted hover:bg-accent hover:text-text'}`}
+          className={`rounded-sm p-2 transition-colors ${mode === 'full' ? 'bg-accent text-text' : 'text-muted hover:bg-accent hover:text-text'}`}
         >
           {mode === 'full' ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
         </button>
@@ -131,9 +151,11 @@ function DrawerTabs({ data, t }) {
       : EMAIL_PREVIEW_DARK_OVERRIDE + data.emailHtml;
   }, [data.emailHtml, resolvedTheme]);
 
+  // "email" siempre por defecto, sea preview o no — ahora que la vista previa del email se
+  // calcula con lo que ya hay (ver buildEmailHtml en server.js), esa pestaña ya tiene contenido
+  // de verdad incluso mientras Rewrite/Fusion siguen trabajando, asi que no hace falta abrir en
+  // otra pestaña distinta a la primera.
   return (
-    // "email" primero y por defecto: es la vista que mejor queda (el diseño 2026 que se hizo
-    // para la plantilla de email), asi que es lo primero que se ve al abrir el drawer.
     <Tabs defaultValue="email" className="flex flex-1 flex-col overflow-hidden">
       <TabsList className="mx-6 mt-3 w-fit bg-secondary text-muted">
         <TabsTrigger value="email">{t('tabEmail')}</TabsTrigger>
@@ -150,13 +172,15 @@ function DrawerTabs({ data, t }) {
                 (ver EmailStage en resumir_video.js, eso no se toca). emailPreviewHtml es una
                 COPIA con un override oscuro inyectado solo para esta vista previa — el marco de
                 alrededor (este div) tambien ayuda a que no se vea como un hueco roto. */}
-            <p className="mb-2 flex-shrink-0 text-xs text-muted">{t('emailPreviewNote')}</p>
-            <div className="min-h-0 flex-1 rounded-xl border border-border bg-card p-3 shadow-[var(--shadow-soft)]">
-              <iframe title="Email preview" srcDoc={emailPreviewHtml} className="h-full w-full rounded-lg" />
+            <p className="mb-2 flex-shrink-0 text-xs text-muted">
+              {data.emailIsPreview ? t('emailComputedPreviewNote') : t('emailPreviewNote')}
+            </p>
+            <div className="min-h-0 flex-1 rounded-sm border border-border bg-card p-3 shadow-[var(--shadow-soft)]">
+              <iframe title="Email preview" srcDoc={emailPreviewHtml} className="h-full w-full rounded-sm" />
             </div>
           </>
         ) : (
-          <p className="text-sm text-muted">{t('noEmailYet')}</p>
+          <p className="text-sm text-muted">{data.fullContentIsPreview ? t('notReadyYet') : t('noEmailYet')}</p>
         )}
       </TabsContent>
 
@@ -165,13 +189,30 @@ function DrawerTabs({ data, t }) {
       </TabsContent>
 
       <TabsContent value="md" className="flex-1 overflow-y-auto p-6">
-        <pre className="whitespace-pre-wrap rounded-xl bg-secondary p-4 font-mono text-xs text-text">{data.markdown}</pre>
+        {data.markdown ? (
+          <pre className="whitespace-pre-wrap rounded-sm bg-secondary p-4 font-mono text-xs text-text">{data.markdown}</pre>
+        ) : (
+          <p className="text-sm text-muted">{t('notReadyYet')}</p>
+        )}
       </TabsContent>
 
       <TabsContent value="transcripcion" className="flex-1 overflow-y-auto p-6">
+        {data.fullContentIsPreview && <PreviewNotice t={t} />}
         <Prose>{data.fullContent}</Prose>
       </TabsContent>
     </Tabs>
+  );
+}
+
+/** Aviso en la pestaña de transcripcion cuando lo que se ve es el transcript CRUDO (sin pasar
+ * por Rewrite todavia) — para que no se confunda con la reescritura/traduccion fiel final, que
+ * puede tener un idioma, formato o nivel de detalle distinto. */
+function PreviewNotice({ t }) {
+  return (
+    <div className="mx-auto mb-4 flex max-w-[70ch] items-center gap-2 rounded-sm border border-warn/30 bg-warn-bg px-3 py-2 text-sm text-warn">
+      <Loader2 size={14} className="flex-shrink-0 animate-spin" />
+      {t('transcriptPreviewNotice')}
+    </div>
   );
 }
 
@@ -179,7 +220,7 @@ function DrawerTabs({ data, t }) {
  * de HTML pre-renderizado en el servidor — asi las 4 pestañas viven en el mismo componente. */
 function Prose({ children }) {
   return (
-    <div className="mx-auto max-w-[75ch] text-[15px] leading-7 text-text [&_h1]:mb-2 [&_h1]:text-2xl [&_h1]:font-bold [&_h1]:tracking-tight [&_h2]:mb-3 [&_h2]:mt-8 [&_h2]:text-xl [&_h2]:font-semibold [&_li]:mb-1 [&_li]:leading-7 [&_p]:mb-4 [&_strong]:font-semibold [&_ul]:list-disc [&_ul]:pl-5">
+    <div className="mx-auto max-w-[70ch] font-serif text-[16px] leading-[1.75] text-text [&_h1]:mb-2 [&_h1]:font-serif [&_h1]:text-2xl [&_h1]:font-semibold [&_h1]:tracking-tight [&_h2]:mb-3 [&_h2]:mt-8 [&_h2]:font-serif [&_h2]:text-xl [&_h2]:font-semibold [&_li]:mb-1 [&_li]:leading-[1.75] [&_p]:mb-4 [&_strong]:font-semibold [&_ul]:list-disc [&_ul]:pl-5">
       <ReactMarkdown remarkPlugins={[remarkGfm]}>{children || ''}</ReactMarkdown>
     </div>
   );
@@ -187,9 +228,12 @@ function Prose({ children }) {
 
 function ActionBar({ videoId, data, t }) {
   const locale = useLocale();
+  const { confirm: confirmDialog, ConfirmDialog } = useConfirmDialog();
   const [sending, setSending] = useState(false);
   const [copied, setCopied] = useState(false);
   const [requeuing, setRequeuing] = useState(false);
+  const [skipping, setSkipping] = useState(false);
+  const [skipped, setSkipped] = useState(false);
   const [notice, setNotice] = useState(null);
   // Estado local optimista, igual que en VideoCard.jsx — data.readAt viene de useVideoData(),
   // que no se vuelve a pedir sola tras el toggle. El useEffect sincroniza si data.readAt cambia
@@ -233,6 +277,25 @@ function ActionBar({ videoId, data, t }) {
     setTimeout(() => setCopied(false), 1500);
   }
 
+  // Aqui, a diferencia de la tarjeta en la grilla, ya se ha LEIDO el resumen y el transcript sin
+  // pulir antes de decidir — es la version informada del mismo boton, por eso el usuario la pidio
+  // aqui como la version que de verdad importa (en la tarjeta no se sabe si el contenido merece
+  // la pena esperar la reescritura o no).
+  async function skipRewrite() {
+    if (!(await confirmDialog(t('confirmSkipRewrite')))) return;
+    setSkipping(true);
+    setNotice(null);
+    try {
+      const res = await fetch(`/api/videos/${videoId}/skip-rewrite`, { method: 'POST' });
+      if (!res.ok) throw new Error(await res.text());
+      setSkipped(true);
+    } catch (err) {
+      setNotice(t('skipRewriteFailed', { error: err.message }));
+    } finally {
+      setSkipping(false);
+    }
+  }
+
   async function reprocess() {
     setRequeuing(true);
     setNotice(null);
@@ -249,6 +312,7 @@ function ActionBar({ videoId, data, t }) {
 
   return (
     <div className="flex items-center justify-between gap-3 border-t border-border bg-card px-6 py-3">
+      {ConfirmDialog}
       <div className="flex min-w-0 items-center gap-3">
         <button
           onClick={toggleRead}
@@ -270,28 +334,50 @@ function ActionBar({ videoId, data, t }) {
         </button>
         <span className="truncate text-sm text-muted">{notice}</span>
       </div>
-      <div className="flex flex-shrink-0 gap-2">
-        <button
-          onClick={reprocess}
-          disabled={requeuing}
-          className="flex items-center gap-1.5 rounded-xl px-3.5 py-2 text-sm font-medium text-muted transition-colors hover:bg-accent hover:text-text disabled:opacity-60"
-        >
-          <RotateCcw size={14} /> {t('reprocess')}
-        </button>
-        <button
-          onClick={copyMd}
-          className="flex items-center gap-1.5 rounded-xl px-3.5 py-2 text-sm font-medium text-muted transition-colors hover:bg-accent hover:text-text"
-        >
-          <Copy size={14} /> {copied ? t('copied') : t('copyMd')}
-        </button>
-        <button
-          onClick={sendEmail}
-          disabled={sending}
-          className="flex items-center gap-1.5 rounded-xl bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary-hover disabled:opacity-60"
-        >
-          <Send size={14} /> {sending ? t('sending') : t('sendEmail')}
-        </button>
-      </div>
+      {/* Reprocesar/copiar .md/reenviar email no tienen nada real que hacer todavia mientras
+          fullContentIsPreview — no hay email que reenviar ni .md final que copiar, y el video no
+          esta en error (asi que /requeue devolveria un 409 confuso). En su lugar va el boton que
+          si tiene sentido aqui: "usar sin pulir" — mas importante en el lector que en la tarjeta,
+          porque aqui ya se ha visto el contenido antes de decidir si merece la pena esperar. */}
+      {data.fullContentIsPreview ? (
+        skipped ? (
+          <span className="flex-shrink-0 text-sm text-success">{t('skipRewriteNotice')}</span>
+        ) : (
+          <div className="flex flex-shrink-0 items-center gap-3">
+            <span className="text-xs text-muted">{t('previewActionsHint')}</span>
+            <button
+              onClick={skipRewrite}
+              disabled={skipping}
+              className="flex items-center gap-1.5 rounded-sm bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary-hover disabled:opacity-60"
+            >
+              <FastForward size={14} /> {skipping ? t('skippingRewrite') : t('skipRewrite')}
+            </button>
+          </div>
+        )
+      ) : (
+        <div className="flex flex-shrink-0 gap-2">
+          <button
+            onClick={reprocess}
+            disabled={requeuing}
+            className="flex items-center gap-1.5 rounded-sm px-3.5 py-2 text-sm font-medium text-muted transition-colors hover:bg-accent hover:text-text disabled:opacity-60"
+          >
+            <RotateCcw size={14} /> {t('reprocess')}
+          </button>
+          <button
+            onClick={copyMd}
+            className="flex items-center gap-1.5 rounded-sm px-3.5 py-2 text-sm font-medium text-muted transition-colors hover:bg-accent hover:text-text"
+          >
+            <Copy size={14} /> {copied ? t('copied') : t('copyMd')}
+          </button>
+          <button
+            onClick={sendEmail}
+            disabled={sending}
+            className="flex items-center gap-1.5 rounded-sm bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary-hover disabled:opacity-60"
+          >
+            <Send size={14} /> {sending ? t('sending') : t('sendEmail')}
+          </button>
+        </div>
+      )}
     </div>
   );
 }

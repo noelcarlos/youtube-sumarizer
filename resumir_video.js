@@ -137,6 +137,73 @@ export const EMAIL_USER = EMAIL_CONFIG.user;
 export const EMAIL_PASS = EMAIL_CONFIG.pass;
 const OVERRIDE_LANG = null; //"Español"; // Set to null to auto-detect
 
+/** Dials del map-reduce de SummarizeStage (ver SummarizeStage.runMapReduce). Medido sobre el
+ * transcript de referencia YA deduplicado (collapseRollingCaptions): 155.311 chars reales, no
+ * los 454.612 sin colapsar. Por debajo de SINGLE_CALL_MAX_CHARS se sigue mandando el transcript
+ * entero en una sola llamada (mejor coherencia posible, cero costuras) — map-reduce solo entra
+ * para la cola larga, donde una sola llamada exige ventanas de contexto enormes y, medido, algunos
+ * modelos degeneran en bucles de repeticion. */
+// Valores para una ventana de 64K (ver tabla de Opus en model-performance.md — a otra ventana,
+// solo SUMMARIZE_SINGLE_CALL_MAX_CHARS y SUMMARIZE_OUTLINE_THRESHOLD_CHARS cambian: 72k/35k a
+// 96K, 80k/40k a 128K+. SUMMARIZE_MAP_CHUNK_CHARS y SUMMARIZE_MAP_OVERLAP_CHARS NO se movieron
+// con esa tabla — Opus predijo que agrandar el chunk del map no ayudaria, un barrido real lo
+// refuto (ver comentario mas abajo), asi que ese valor viene de la medicion, no de la ventana).
+const SUMMARIZE_SINGLE_CALL_MAX_CHARS = 60_000;
+// Antes esto era UNA constante compartida (TRANSCRIPT_CHUNK_CHARS) para que Summarize y Rewrite
+// trocearan igual. Un barrido real (12k/24k/48k/92k, mismo modelo, mismo documento, servidor
+// reiniciado entre cada medida para descartar cache de prefijo) demostro que el chunk optimo de
+// Summarize NO es 12.000: 92.000 fue un 42% mas rapido (878s -> 509s), refutando la prediccion de
+// que agrandar el chunk nunca ayuda. Pero el 12.000 de Rewrite esta medido para OTRA cosa —
+// reescritura fiel 1:1 (el output escala con el input) — y su propio sweep documentado mas abajo
+// muestra que a 32.000 YA colapsa en repeticion (4.40x). Los dos optimos divergen de verdad, asi
+// que ahora son dos constantes explicitas, no una compartida por coincidencia.
+const REWRITE_CHUNK_CHARS = 12_000;
+const SUMMARIZE_MAP_CHUNK_CHARS = 92_000;
+const SUMMARIZE_MAP_OVERLAP_CHARS = 600;
+// Si las notas del map concatenadas superan esto, el reduce plano (una sola llamada con TODAS
+// las notas) deja de ser fiable — pasa a un reduce jerarquico por outline (ver
+// SummarizeStage.runOutlineReduce). ~30-40k chars de notas equivale a un video de 6+ horas ya
+// deduplicado; por debajo, una sola llamada de reduce es mas simple y sin riesgo de costuras.
+const SUMMARIZE_OUTLINE_THRESHOLD_CHARS = 30_000;
+
+/** Cuantos chars de transcript entran en la ventana de contexto configurada AHORA MISMO en el
+ * modelo local — solo importa para SUMMARIZE_SINGLE_CALL_MAX_CHARS, la unica de las 4 constantes
+ * de arriba que de verdad depende de la ventana (MAP_CHUNK_CHARS/MAP_OVERLAP_CHARS estan
+ * limitados por el presupuesto de bullets del prompt, no por la ventana; ver la tabla de
+ * model-performance.md). LOCAL_CONTEXT_WINDOW_TOKENS en .env tiene que reflejar lo que el
+ * usuario tenga puesto en oMLX/LM Studio en ese momento — no hay forma de leerlo en caliente
+ * desde aqui, asi que si lo cambia sin actualizar .env, esta comprobacion queda desactualizada
+ * (avisa igual con el valor viejo, no es peor que no avisar nada). 3,2 chars/token es
+ * conservador (medido: 4,2 en ingles con subtitulos crudos sin deduplicar; 3,2 deja margen para
+ * español y para texto ya deduplicado, que es mas denso).
+ *
+ * Default 64_000 (no 128_000): asumido explicitamente a peticion del usuario mientras no se
+ * confirme otra cosa — subir esto sin subir tambien la ventana real configurada en el modelo
+ * hace que la comprobacion de mas abajo deje de avisar cuando de verdad haría falta. */
+const LOCAL_CONTEXT_WINDOW_TOKENS = Number(process.env.LOCAL_CONTEXT_WINDOW_TOKENS || 64_000);
+const CHARS_PER_TOKEN_ESTIMATE = 3.2;
+// Reserva para que la respuesta del reduce plano/llamada unica nunca se quede sin sitio: medido,
+// un resumen bueno puede llegar a >5.000 tokens de salida (Qwen, video de referencia) — 8.000 de
+// margen, mas el overhead fijo del propio prompt de instrucciones (~550 tokens en buildPrompt).
+const SUMMARIZE_OUTPUT_RESERVE_TOKENS = 8_000;
+const SUMMARIZE_PROMPT_OVERHEAD_TOKENS = 550;
+
+{
+    const ceilingChars = Math.floor(
+        (LOCAL_CONTEXT_WINDOW_TOKENS * 0.85 - SUMMARIZE_OUTPUT_RESERVE_TOKENS - SUMMARIZE_PROMPT_OVERHEAD_TOKENS)
+        * CHARS_PER_TOKEN_ESTIMATE
+    );
+    if (SUMMARIZE_SINGLE_CALL_MAX_CHARS > ceilingChars) {
+        console.warn(
+            `⚠️ SUMMARIZE_SINGLE_CALL_MAX_CHARS (${SUMMARIZE_SINGLE_CALL_MAX_CHARS.toLocaleString()} chars) ` +
+            `supera lo que cabe con margen en una ventana de ${LOCAL_CONTEXT_WINDOW_TOKENS.toLocaleString()} ` +
+            `tokens (~${ceilingChars.toLocaleString()} chars, reservando salida) — un video en ese rango puede ` +
+            `agotar la ventana antes de terminar la respuesta. Sube LOCAL_CONTEXT_WINDOW_TOKENS en .env si de ` +
+            `verdad tienes esa ventana configurada en el modelo, o baja SUMMARIZE_SINGLE_CALL_MAX_CHARS.`
+        );
+    }
+}
+
 // ==========================================================
 // SECTION 1: AI CLIENTS (Dependency Injection)
 // ==========================================================
@@ -199,6 +266,42 @@ async function withConnectionRetry(label, attempts, fn) {
             console.warn(`   ⚠️ [${label}] conexión caída (${err.message}) — reintento ${attempt}/${attempts - 1}`);
         }
     }
+}
+
+/** Mutex minimo: encadena promesas, cada `run()` espera a que termine el anterior antes de
+ * ejecutar el suyo. Sin esto, dos etapas (Summarize y Rewrite corren como workers
+ * independientes, a proposito, para paralelismo real con backends distintos) que apunten AMBAS
+ * al mismo servidor local se pisan mandando dos inferencias a la vez al mismo modelo cargado —
+ * visto en la practica: LM Studio/oMLX no reparte esa carga, se atasca o tarda muchisimo mas que
+ * si se turnan. Cloud (nvidia/gemini/deepseek) no necesita esto — cada proveedor gestiona su
+ * propia concurrencia remota; el problema es especifico de "un solo modelo cargado en una GPU". */
+function createMutex() {
+    let queue = Promise.resolve();
+    return {
+        run(fn) {
+            const result = queue.then(fn, fn);
+            // Si fn() falla, la cola sigue viva igualmente (el .catch de aqui es solo para que el
+            // rechazo de ESTE turno no tumbe la cadena para el siguiente en espera).
+            queue = result.catch(() => {});
+            return result;
+        },
+    };
+}
+
+/** Un solo mutex, a nivel de modulo — todas las instancias de LMStudioClient de este proceso
+ * (una por SummarizeStage, otra por RewriteStage, sean o no la misma instancia de aiClient) lo
+ * comparten, asi que da igual desde que etapa venga la llamada: nunca hay dos peticiones de
+ * verdad en vuelo contra el servidor local al mismo tiempo. */
+const localInferenceMutex = createMutex();
+
+/** Interruptor en caliente (server.js lo expone en Settings > Colas) — el mutex es el default
+ * seguro porque un modelo grande (30B+) se atasca o tarda mucho mas si dos peticiones compiten
+ * por la misma GPU, pero un modelo pequeño puede tener margen de sobra para atender dos a la vez
+ * sin degradarse. Se desactiva, no se borra: siempre queda la opcion de volver a encenderlo sin
+ * reiniciar nada. */
+let localMutexEnabled = true;
+export function setLocalMutexEnabled(enabled) {
+    localMutexEnabled = enabled;
 }
 
 class GeminiClient extends IModelClient {
@@ -281,6 +384,11 @@ class LMStudioClient extends IModelClient {
         this.modelName = modelName;
     }
     async generateContent(promptContent, signal) {
+        if (!localMutexEnabled) return this._generateContent(promptContent, signal);
+        return localInferenceMutex.run(() => this._generateContent(promptContent, signal));
+    }
+
+    async _generateContent(promptContent, signal) {
         console.log(`   🤖 [LMStudio] Request → prompt length: ${promptContent.length} chars (timeout: ${Math.round(this.ai.timeout / 1000)}s, max_tokens: ${LOCAL_MAX_OUTPUT_TOKENS.toLocaleString()})`);
 
         const startedAt = Date.now();
@@ -300,8 +408,19 @@ class LMStudioClient extends IModelClient {
         }
 
         const elapsedSec = Math.round((Date.now() - startedAt) / 1000);
-        let content = response.choices[0].message.content;
-        let rawContent = content = content.replace(/<think>[\s\S]*?<\/think>\s*/g, '') // Clean "think" tags
+        const content = response.choices[0].message.content;
+        if (content == null) {
+            // Un modelo "razonador" (p.ej. Nemotron) puede volcar todo en reasoning_content y
+            // dejar content en null si se queda sin tokens antes de escribir la respuesta visible
+            // — sin este guard, el .replace() de abajo petaba con un TypeError opaco que no decia
+            // nada del modelo ni del finish_reason real.
+            throw new Error(
+                `LM Studio devolvio content=null (finish_reason: ${response.choices[0].finish_reason}) — ` +
+                `probablemente se quedo sin max_tokens (${LOCAL_MAX_OUTPUT_TOKENS.toLocaleString()}) pensando ` +
+                `antes de escribir la respuesta visible.`
+            );
+        }
+        const rawContent = content.replace(/<think>[\s\S]*?<\/think>\s*/g, ''); // Clean "think" tags
 
         console.log(`   🤖 [LMStudio] Response ← ${rawContent.length} chars in ${elapsedSec}s, finish_reason: ${response.choices[0].finish_reason}`);
         console.log(`   🤖 [LMStudio] Response preview: ${rawContent.slice(0, 300).replace(/\n/g, ' ')}${rawContent.length > 300 ? '...' : ''}`);
@@ -1026,6 +1145,10 @@ export class DownloadStage extends BaseStage {
         throw new Error("No se pudo descargar el transcript en ningún formato.");
     }
 
+    // Las 3 ramas devuelven texto de "rolling captions" de YouTube: cada linea aparece repetida
+    // 2-3 veces mientras se desliza en pantalla, y nada de lo que se limpia aqui arriba (marcas
+    // de tiempo, tags, entidades) toca ese texto duplicado — collapseRollingCaptions() es lo que
+    // lo colapsa, y al ser idempotente no pasa nada si un formato en concreto no lo necesitaba.
     _parseSubtitleContent(raw, fmt) {
         if (fmt === 'json3') {
             try {
@@ -1033,7 +1156,7 @@ export class DownloadStage extends BaseStage {
                 const text = (json.events || [])
                     .flatMap(e => (e.segs || []).map(s => s.utf8 || ''))
                     .join(' ').replace(/\n/g, ' ').replace(/\s+/g, ' ').trim();
-                return text.length > 50 ? text : null;
+                return text.length > 50 ? collapseRollingCaptions(text) : null;
             } catch { return null; }
         }
         if (fmt === 'vtt') {
@@ -1041,7 +1164,7 @@ export class DownloadStage extends BaseStage {
                 .replace(/WEBVTT[\s\S]*?\n\n/, '')
                 .replace(/\d{2}:\d{2}:\d{2}.\d{3} --> \d{2}:\d{2}:\d{2}.\d{3}[^\n]*/g, '')
                 .replace(/<[^>]*>/g, '').replace(/\n+/g, ' ').replace(/\s+/g, ' ').trim();
-            return text.length > 50 ? text : null;
+            return text.length > 50 ? collapseRollingCaptions(text) : null;
         }
         // raw XML: <transcript><text ...>content</text></transcript>
         const text = raw
@@ -1049,7 +1172,7 @@ export class DownloadStage extends BaseStage {
             .replace(/&#39;/g, "'").replace(/&amp;/g, '&').replace(/&quot;/g, '"')
             .replace(/&lt;/g, '<').replace(/&gt;/g, '>')
             .replace(/\n+/g, ' ').replace(/\s+/g, ' ').trim();
-        return text.length > 50 ? text : null;
+        return text.length > 50 ? collapseRollingCaptions(text) : null;
     }
 
     /** vtt va primero, no json3: en produccion YouTube ha devuelto 429 en el endpoint de json3
@@ -1217,6 +1340,119 @@ function extractVideoIdFromPath(filePath) {
     return base.split('.')[0];
 }
 
+/** Colapsa repeticiones INMEDIATAS de bloques de 3-20 palabras — el patron exacto que dejan las
+ * "rolling captions" automaticas de YouTube (cada linea se repite 2-3 veces seguidas mientras se
+ * desliza en pantalla, y el parseo de subtitulos hoy solo borra las marcas de tiempo, no el
+ * texto duplicado). Medido sobre un transcript real de 454.612 caracteres: el contenido de
+ * verdad es solo 155.311 (0,34x) — el resto es esto. Importa mas alla del ahorro de tokens: un
+ * modelo a temperature 0 alimentado con un texto que YA es un bucle de repeticion puede limitarse
+ * a continuar el patron (visto en la practica con gemma-4-12B-agentic sobre este mismo video).
+ *
+ * Idempotente por construccion — pero solo EN EL PUNTO FIJO: una pasada puede dejar una
+ * repeticion desalineada por culpa de otra repeticion vecina consumida justo antes (medido en la
+ * practica: un ">> Not necessary." repetido 3 veces solo se colapsaba del todo en la segunda
+ * pasada). Por eso `collapseRollingCaptions` de mas abajo repite la pasada hasta que el texto ya
+ * no cambia (tope de seguridad de intentos) en vez de asumir que una sola pasada basta — asi da
+ * igual cuantas veces o en que orden se llame, siempre converge al mismo resultado. */
+function collapseRollingCaptionsOnce(text) {
+    const words = text.split(/\s+/);
+    const out = [];
+    const MIN_PERIOD = 3;
+    const MAX_PERIOD = 20;
+    let i = 0;
+    while (i < words.length) {
+        let matchedPeriod = 0;
+        const maxPeriod = Math.min(MAX_PERIOD, Math.floor((words.length - i) / 2));
+        for (let period = maxPeriod; period >= MIN_PERIOD; period--) {
+            let isRepeat = true;
+            for (let k = 0; k < period; k++) {
+                if (words[i + k] !== words[i + period + k]) { isRepeat = false; break; }
+            }
+            if (isRepeat) { matchedPeriod = period; break; }
+        }
+        if (matchedPeriod === 0) {
+            out.push(words[i]);
+            i++;
+            continue;
+        }
+        for (let k = 0; k < matchedPeriod; k++) out.push(words[i + k]);
+        i += matchedPeriod;
+        // Sigue saltando MIENTRAS el siguiente bloque siga repitiendo el mismo periodo — una
+        // rolling caption no siempre se repite exactamente 2 veces, a veces son 3 o mas.
+        while (i + matchedPeriod <= words.length) {
+            let stillRepeat = true;
+            for (let k = 0; k < matchedPeriod; k++) {
+                if (words[i - matchedPeriod + k] !== words[i + k]) { stillRepeat = false; break; }
+            }
+            if (!stillRepeat) break;
+            i += matchedPeriod;
+        }
+    }
+    return out.join(' ');
+}
+
+export function collapseRollingCaptions(text) {
+    if (!text) return text;
+    let current = text;
+    for (let pass = 0; pass < 5; pass++) {
+        const next = collapseRollingCaptionsOnce(current);
+        if (next === current) break;
+        current = next;
+    }
+    return current;
+}
+
+/** Trocea texto en frases hasta `maxChars`, sin partir nunca a mitad de frase — la particion
+ * BASE, sin solape. RewriteStage y el map de SummarizeStage llaman a esta MISMA funcion sobre el
+ * MISMO transcript ya deduplicado, pero cada uno con SU PROPIO tamaño de chunk medido por
+ * separado (REWRITE_CHUNK_CHARS vs SUMMARIZE_MAP_CHUNK_CHARS — ver el comentario junto a esas dos
+ * constantes: los optimos de las dos etapas divergen de verdad, no es el mismo numero por
+ * coincidencia). El solape (necesario solo para el map, ver applyOverlap) se aplica DESPUES, como
+ * una vista
+ * sobre estos chunks — nunca se guarda solapado, porque RewriteStage concatena sus chunks
+ * reescritos verbatim en el resultado final: si llevaran solape, ese texto saldria duplicado. */
+function chunkBySentences(text, maxChars) {
+    const sentences = text
+        .replace(/\s+/g, ' ')
+        .replace(/([.!?])\s+/g, '$1\n')
+        .split('\n');
+
+    const chunks = [];
+    let current = '';
+
+    for (const s of sentences) {
+        if ((current + s).length > maxChars) {
+            chunks.push(current.trim());
+            current = s;
+        } else {
+            current += (current ? ' ' : '') + s;
+        }
+    }
+
+    if (current.trim()) {
+        chunks.push(current.trim());
+    }
+
+    return chunks;
+}
+
+/** Vista con solape sobre chunks YA troceados (ver chunkBySentences) — cada chunk (salvo el
+ * primero) lleva pegada la cola del chunk anterior, para que el modelo no pierda el antecedente
+ * de una frase que quedo colgando al cortar ("eso" o "y por eso" al principio de un chunk no
+ * tiene a que referirse si el modelo solo ve ESE chunk). Solo tiene sentido para el map de
+ * Summarize — sus chunks alimentan notas descartables, no texto que se concatena verbatim. */
+function applyOverlap(chunks, overlapChars) {
+    if (overlapChars <= 0 || chunks.length < 2) return chunks;
+
+    return chunks.map((chunk, i) => {
+        if (i === 0) return chunk;
+        const prevTail = chunks[i - 1].slice(-overlapChars);
+        // Corta el solape en el primer espacio para no arrancar a mitad de palabra.
+        const cleanTail = prevTail.slice(prevTail.indexOf(' ') + 1);
+        return cleanTail ? `${cleanTail} ${chunk}` : chunk;
+    });
+}
+
 /** Base compartida por SummarizeStage y RewriteStage: las dos hacen una sola llamada (o una
  * serie de llamadas, en el caso de RewriteStage) a SU PROPIO aiClient, y las dos necesitan el
  * mismo rastreo de progreso/cancelacion en vivo — currentJob es lo que server.js lee para
@@ -1259,6 +1495,11 @@ export class SummarizeStage extends AiJobStage {
             errorDir: DIRS.SUMMARIZE.ERROR,
             logger
         }, aiClient);
+        // Overrides para benchmarking (ver model-performance.md) — null en produccion, usa las
+        // constantes de arriba. Un arnes de test puede pisar esto para barrer tamaños de chunk
+        // sin tocar SUMMARIZE_MAP_CHUNK_CHARS ni el tope de bullets que usa el pipeline real.
+        this.mapChunkChars = null;
+        this.mapBulletCap = null;
     }
 
     // Two short scalar fields on their own lines, then the prose as the rest of the message. The
@@ -1308,6 +1549,284 @@ export class SummarizeStage extends AiJobStage {
             `;
     }
 
+    /** Fase MAP: notas densas de UNA parte, no un resumen — el reduce es el que ve todas las
+     * partes juntas y decide como se organiza el resumen final. Sin headings ni conclusiones: si
+     * el chunk trae un "## Tema" y el reduce lo copia tal cual, el resultado final "suena a N
+     * resumenes pegados" en vez de a un resumen coherente — el sitio correcto para reorganizar
+     * por tema es el reduce, no aqui. Tampoco se le pasa el resumen del chunk anterior: mantener
+     * ese estado serializaria el map (adios paralelismo), y en modelos locales pequeños el
+     * contexto previo tiende a filtrarse tal cual en la salida en vez de usarse como contexto. */
+    buildMapPrompt(chunk, index, total, languageHint, bulletCap = 12) {
+        return `
+            You are taking dense notes on PART ${index} of ${total} of a video transcript. This is
+            raw material for a LATER step that will write the final summary — you are not writing
+            the summary yourself, and you cannot see the other parts.
+
+            ### OUTPUT FORMAT — follow this EXACTLY, nothing else
+            TOPICS: 2-5 short topic tags for this part, separated by " | "
+            NOTES:
+            - dense bullet points, one factual claim per bullet, at most ${bulletCap} bullets
+
+            ### RULES
+            - No headings (no #, ##, etc), no preamble, no closing remarks, no meta-commentary
+              like "in this part the speaker discusses...".
+            - Do NOT draw conclusions — a single part cannot see the whole video.
+            - Keep numbers, names, quotes and technical terms VERBATIM.
+            - ${languageHint ? `Write in ${languageHint}.` : `Write in the same language as the transcript below.`}
+
+            TRANSCRIPT PART ${index}/${total}:
+            ---
+            ${chunk}
+            ---
+            `.trim();
+    }
+
+    /** Fase REDUCE plana: una sola llamada con TODAS las notas del map, en orden cronologico. Se
+     * le pide EXPLICITAMENTE reorganizar por tema (no por parte) — las notas son material en
+     * crudo, no secciones ya escritas. Mismo formato TITLE/LANGUAGE/SUMMARY que buildPrompt, asi
+     * que InterpretSummaryStage.parseSummary no necesita saber si el resumen vino de una llamada
+     * o de map-reduce. */
+    buildReducePrompt(notesConcatenated, languageHint) {
+        return `
+            You are an expert analyst. Below are dense notes taken independently on successive
+            parts of a video transcript, IN CHRONOLOGICAL ORDER. They are raw material, not
+            sections — write ONE coherent summary of the whole video from them.
+
+            ### OUTPUT FORMAT — follow this EXACTLY
+            Line 1: TITLE: followed by the most likely video title, inferred strictly from the notes.
+            Line 2: LANGUAGE: followed by the notes' original language in English (e.g. Spanish, English, French).
+            Line 3: the marker SUMMARY: on a line of its own.
+            Everything after that marker: the summary itself, as free-form Markdown.
+
+            Emit nothing before TITLE: and nothing after the summary. No JSON, no code fences, no commentary.
+
+            ### SUMMARY REQUIREMENTS
+            - Reorganize by TOPIC, not by chronological part. Never mention "part", "chunk",
+              "fragment", or phrases like "the first part of the video".
+            - If a topic is revisited later in the video, cover it once and note that it recurs.
+            - Merge duplicated points across notes into a single statement.
+            - Be exhaustive and strictly grounded in the notes below. Do NOT invent or add outside
+              information, and do NOT draw conclusions the speaker does not state.
+            - Open with a short framing paragraph and close only with conclusions the speaker
+              actually states.
+            - Use Markdown headings, bullet lists and **bold**. Aim for roughly 900-1500 words —
+              this is meant to be exhaustive, not a short abstract.
+            - ${languageHint ? `Write in ${languageHint}.` : `Write in the same language as the notes below.`}
+
+            NOTES (chronological, raw material — not sections):
+            ---
+            ${notesConcatenated}
+            ---
+            `.trim();
+    }
+
+    /** Fase OUTLINE (solo para el reduce jerarquico, ver runOutlineReduce): input barato (todas
+     * las notas), output barato (titulo + una lista de 8-12 secciones TEMATICAS con que numeros
+     * de parte alimenta cada una) — la reorganizacion por tema pasa aqui, una sola vez, en vez de
+     * que cada llamada de seccion tenga que adivinarla por su cuenta. */
+    buildOutlinePrompt(notesConcatenated, totalParts, languageHint) {
+        return `
+            You are planning a long summary from dense notes taken on successive parts of a video
+            transcript, IN CHRONOLOGICAL ORDER. The video is too long to summarize in one pass, so
+            this is the planning step: infer the title/language, then group the notes into 8-12
+            THEMATIC sections (not chronological parts) that a later step will write one at a time.
+
+            ### OUTPUT FORMAT — follow this EXACTLY
+            TITLE: <title inferred from the notes>
+            LANGUAGE: <notes' language in English>
+            SECTION: <short thematic section title>
+            NOTES: <comma-separated part numbers assigned to this section, e.g. 1,2,5>
+            SECTION: <next section title>
+            NOTES: <part numbers>
+            ... (repeat SECTION/NOTES for every section, 8-12 sections total)
+
+            Every part number from 1 to ${totalParts} must be assigned to at least one section. A
+            part can be assigned to more than one section if it genuinely covers more than one
+            theme. Order the SECTION lines in the order they should appear in the final summary —
+            group by theme, this does not have to match chronological order.
+
+            NOTES (chronological, raw material):
+            ---
+            ${notesConcatenated}
+            ---
+            `.trim();
+    }
+
+    /** Fase SECTION (reduce jerarquico): escribe SOLO el cuerpo de UNA seccion del outline, a
+     * partir SOLO de las notas asignadas a esa seccion — nunca todas las notas, para que el coste
+     * por llamada no vuelva a crecer con el tamaño del video. prevTitle/nextTitle son para que no
+     * se pise con las secciones vecinas, no para que las resuma. */
+    buildSectionPrompt(sectionTitle, assignedNotesText, prevTitle, nextTitle) {
+        return `
+            You are writing ONE section of a long video summary. Other sections cover the rest of
+            the video — write ONLY this section's content, as Markdown body text (no heading, the
+            caller adds the heading). Do not restate what other sections already cover.
+
+            SECTION TO WRITE: ${sectionTitle}
+            ${prevTitle ? `Previous section (already covered elsewhere, do not repeat it): ${prevTitle}` : ''}
+            ${nextTitle ? `Next section (covered separately, do not preempt it): ${nextTitle}` : ''}
+
+            ### RULES
+            - Output ONLY the body prose/bullets for THIS section — no heading, no preamble, no
+              "in this section", no mention of "parts", "chunks" or "notes".
+            - Be exhaustive and strictly grounded in the notes below. Do NOT invent anything.
+            - Use Markdown bullet lists and **bold** where useful.
+
+            NOTES ASSIGNED TO THIS SECTION:
+            ---
+            ${assignedNotesText}
+            ---
+            `.trim();
+    }
+
+    parseOutline(raw) {
+        const scalar = (field) => {
+            const m = raw.match(new RegExp(`^[ \\t>*_]*${field}\\s*:?\\**\\s*:?[ \\t]*(.+?)[ \\t]*$`, 'im'));
+            return m ? m[1].replace(/^\**|\**$/g, '').trim() : '';
+        };
+        const sections = [];
+        const sectionRe = /^SECTION:\s*(.+?)\s*$\n^NOTES:\s*([0-9,\s]+)\s*$/gim;
+        let m;
+        while ((m = sectionRe.exec(raw))) {
+            const noteIndices = m[2].split(',').map(s => parseInt(s.trim(), 10)).filter(Number.isFinite);
+            if (noteIndices.length) sections.push({ title: m[1].trim(), noteIndices });
+        }
+        if (sections.length === 0) {
+            throw new Error(
+                `Invalid outline output: no SECTION:/NOTES: pairs found (response started with: ` +
+                `${raw.trim().slice(0, 120).replace(/\n/g, ' ')})`
+            );
+        }
+        return { title: scalar('TITLE') || 'Untitled', language: scalar('LANGUAGE') || 'Unknown', sections };
+    }
+
+    /** Reduce jerarquico: escape hatch cuando las notas concatenadas son demasiadas para un
+     * reduce plano de una sola llamada (ver SUMMARIZE_OUTLINE_THRESHOLD_CHARS). Deliberadamente
+     * NO es un fold por pares (combinar de 2 en 2): eso vuelve a comprimir resumenes ya
+     * comprimidos en cada nivel (perdida de detalle compuesta) y el modelo nunca ve el documento
+     * completo de una vez. Aqui el outline SI ve todas las notas (input barato, output
+     * pequeño), y cada seccion se escribe con SOLO sus notas asignadas — el coste crece con el
+     * NUMERO de secciones, no con la longitud de una sola llamada gigante. */
+    async runOutlineReduce(notes, languageHint) {
+        const notesConcatenated = notes.map((n, i) => `--- PART ${i + 1}/${notes.length} ---\n${n}`).join('\n\n');
+        const outlinePrompt = this.buildOutlinePrompt(notesConcatenated, notes.length, languageHint);
+        const outlineRes = await this.aiClient.generateContent(outlinePrompt, this.currentJob.abortController.signal);
+        const outline = this.parseOutline(outlineRes.rawContent);
+
+        this.currentJob.totalChunks = this.currentJob.totalChunks + outline.sections.length;
+
+        const sectionBodies = [];
+        let lastModel = outlineRes.model, lastClient = outlineRes.client;
+        for (let i = 0; i < outline.sections.length; i++) {
+            this.currentJob.currentChunk = this.currentJob.currentChunk + 1;
+            const section = outline.sections[i];
+            let assignedNotesText = section.noteIndices.map(idx => notes[idx - 1]).filter(Boolean).join('\n\n');
+
+            // Nada obliga a que el outline reparta bien: en el peor caso (le asigna TODAS las
+            // partes a TODAS las secciones) el coste por seccion vuelve a crecer con el tamaño
+            // del video entero, justo lo que el reduce jerarquico existe para evitar. Un clamp
+            // por seccion, no por outline completo, porque una seccion legitimamente grande (le
+            // tocaron muchas notas porque el tema de verdad ocupa medio video) sigue siendo valida
+            // hasta este limite — solo se corta si se sale de rango.
+            const maxSectionChars = SUMMARIZE_OUTLINE_THRESHOLD_CHARS / 2;
+            if (assignedNotesText.length > maxSectionChars) {
+                console.warn(
+                    `   ⚠️ Sección ${i + 1}/${outline.sections.length} ("${section.title}"): notas asignadas ` +
+                    `(${assignedNotesText.length} chars) superan el límite por sección (${maxSectionChars}) — ` +
+                    `el outline puede haber repartido mal, se recorta.`
+                );
+                assignedNotesText = assignedNotesText.slice(0, maxSectionChars);
+            }
+
+            const prevTitle = outline.sections[i - 1]?.title || null;
+            const nextTitle = outline.sections[i + 1]?.title || null;
+            const prompt = this.buildSectionPrompt(section.title, assignedNotesText, prevTitle, nextTitle);
+            const res = await this.aiClient.generateContent(prompt, this.currentJob.abortController.signal);
+            lastModel = res.model;
+            lastClient = res.client;
+            const body = res.rawContent.trim();
+            if (!body) throw new Error(`Section ${i + 1}/${outline.sections.length} ("${section.title}"): el modelo devolvió una sección vacía`);
+            sectionBodies.push(`## ${section.title}\n\n${body}`);
+        }
+
+        const rawContent = `TITLE: ${outline.title}\nLANGUAGE: ${outline.language}\nSUMMARY:\n${sectionBodies.join('\n\n')}`;
+        return { rawContent, model: lastModel, client: lastClient };
+    }
+
+    /** Fase MAP + REDUCE completa. Solo se llama cuando el transcript deduplicado supera
+     * SUMMARIZE_SINGLE_CALL_MAX_CHARS (ver execute) — para la mayoria de videos se sigue usando
+     * la llamada unica de siempre, que da la mejor coherencia posible cuando cabe. */
+    async runMapReduce(transcript, languageHint) {
+        // Misma funcion de troceado que RewriteStage (chunkBySentences), pero con SU PROPIO
+        // tamaño (SUMMARIZE_MAP_CHUNK_CHARS, no el de Rewrite) — medido por separado, ver el
+        // comentario junto a esas dos constantes. mapChunkChars/mapBulletCap solo se pisan desde
+        // un arnes de benchmark (ver constructor); en produccion son null y usan las constantes.
+        const chunkChars = this.mapChunkChars || SUMMARIZE_MAP_CHUNK_CHARS;
+        const bulletCap = this.mapBulletCap || Math.max(12, Math.round(chunkChars / 1000));
+        const chunks = chunkBySentences(transcript, chunkChars);
+        const mapInputs = applyOverlap(chunks, SUMMARIZE_MAP_OVERLAP_CHARS);
+        this.currentJob.totalChunks = chunks.length + 1; // +1 de margen para la fase de reduce
+        this.currentJob.step = 'summary-map';
+
+        const notes = [];
+        let lastModel = null, lastClient = null;
+        for (let i = 0; i < mapInputs.length; i++) {
+            this.currentJob.currentChunk = i + 1;
+            const prompt = this.buildMapPrompt(mapInputs[i], i + 1, mapInputs.length, languageHint, bulletCap);
+
+            let res = await this.aiClient.generateContent(prompt, this.currentJob.abortController.signal);
+            let note = res.rawContent.trim();
+
+            if (!note) throw new Error(`Map chunk ${i + 1}/${chunks.length}: el modelo devolvió notas vacías`);
+
+            // Guarda deterministas: si el colapso de repeticiones se come mas del 15% del texto,
+            // el modelo entro en un bucle de repeticion (visto en la practica con documentos
+            // largos) — un reintento suele bastar, porque no es un problema del contenido sino de
+            // esa generacion concreta.
+            const collapsed = collapseRollingCaptions(note);
+            if (collapsed.length < note.length * 0.85) {
+                console.warn(`   ⚠️ Map chunk ${i + 1}/${chunks.length}: repeticion detectada en las notas, reintentando...`);
+                res = await this.aiClient.generateContent(prompt, this.currentJob.abortController.signal);
+                note = res.rawContent.trim();
+                if (!note) throw new Error(`Map chunk ${i + 1}/${chunks.length}: el modelo devolvió notas vacías tras reintentar`);
+            }
+
+            // Aviso, no error: unas notas largas no rompen el reduce, solo sugieren que el modelo
+            // reescribio en vez de anotar — vale la pena saberlo, no vale la pena tirar el chunk.
+            if (note.length > chunks[i].length * 0.4) {
+                console.warn(
+                    `   ⚠️ Map chunk ${i + 1}/${chunks.length}: notas largas (${note.length} chars sobre ` +
+                    `${chunks[i].length} del chunk) — puede que el modelo haya reescrito en vez de anotar`
+                );
+            }
+
+            lastModel = res.model;
+            lastClient = res.client;
+            notes.push(note);
+        }
+
+        this.currentJob.step = 'summary-reduce';
+        this.currentJob.currentChunk = chunks.length + 1;
+
+        const notesConcatenated = notes.map((n, i) => `--- PART ${i + 1}/${notes.length} ---\n${n}`).join('\n\n');
+
+        let rawContent, model, client;
+        if (notesConcatenated.length <= SUMMARIZE_OUTLINE_THRESHOLD_CHARS) {
+            const prompt = this.buildReducePrompt(notesConcatenated, languageHint);
+            const res = await this.aiClient.generateContent(prompt, this.currentJob.abortController.signal);
+            rawContent = res.rawContent;
+            model = res.model;
+            client = res.client;
+        } else {
+            const res = await this.runOutlineReduce(notes, languageHint);
+            rawContent = res.rawContent;
+            model = res.model;
+            client = res.client;
+        }
+
+        return { rawContent, model: model || lastModel, client: client || lastClient, mapChunks: chunks.length, mapChunkChars: chunkChars };
+    }
+
     async execute(filePath) {
         const videoId = extractVideoIdFromPath(filePath);
         const fileSizeBytes = await fs.stat(filePath).then(s => s.size).catch(() => 0);
@@ -1324,8 +1843,26 @@ export class SummarizeStage extends AiJobStage {
                 console.warn(`⚠️ videoId mismatch: filename=${videoId}, json=${data.videoId}`);
             }
 
-            const prompt = this.buildPrompt(data.transcript);
-            const { client, model, rawContent } = await this.aiClient.generateContent(prompt, this.currentJob.abortController.signal);
+            // Red de seguridad para ficheros ya en disco de antes del fix en
+            // _parseSubtitleContent — idempotente, no hace nada si ya viene limpio.
+            const transcript = collapseRollingCaptions(data.transcript);
+            const languageHint = data.languageFound || null;
+
+            let client, model, rawContent, summaryStrategy, summaryMapChunks, summaryMapChunkChars;
+
+            if (transcript.length <= SUMMARIZE_SINGLE_CALL_MAX_CHARS && !this.mapChunkChars) {
+                summaryStrategy = 'single';
+                const prompt = this.buildPrompt(transcript);
+                ({ client, model, rawContent } = await this.aiClient.generateContent(prompt, this.currentJob.abortController.signal));
+            } else {
+                summaryStrategy = 'map-reduce';
+                const result = await this.runMapReduce(transcript, languageHint);
+                client = result.client;
+                model = result.model;
+                rawContent = result.rawContent;
+                summaryMapChunks = result.mapChunks;
+                summaryMapChunkChars = result.mapChunkChars;
+            }
 
             // Se guarda TODO lo que trajo download/output (incluido el transcript) para que
             // InterpretSummary tenga de donde tirar despues de juntar las dos mitades — es la
@@ -1335,6 +1872,8 @@ export class SummarizeStage extends AiJobStage {
                 summaryModel: model,
                 summaryClient: client,
                 summaryDate: new Date().toISOString(),
+                summaryStrategy,
+                ...(summaryMapChunks ? { summaryMapChunks, summaryMapChunkChars } : {}),
                 rawContent,
             };
 
@@ -1342,7 +1881,7 @@ export class SummarizeStage extends AiJobStage {
             await fs.writeFile(outPath, JSON.stringify(summaryPart, null, 2));
             await this.logSuccess([filePath], [outPath]);
 
-            console.log(`   🏁 ${videoId} (resumen) completado en ${Math.round((Date.now() - fileStart) / 1000)}s`);
+            console.log(`   🏁 ${videoId} (resumen, ${summaryStrategy}) completado en ${Math.round((Date.now() - fileStart) / 1000)}s`);
         } catch (err) {
             const wasCancelled = this.wasCancelled();
             const reported = wasCancelled ? new Error('Cancelado por el usuario') : err;
@@ -1379,30 +1918,15 @@ export class RewriteStage extends AiJobStage {
      * thread and repeats itself until it hits the output cap; below that, larger chunks slow decode
      * down (58 tok/s at 24k vs 79 at 12k), so fewer-and-bigger chunks finish a transcript SLOWER
      * overall. Re-measure before changing this, and re-measure when changing model — a diferente
-     * modelo, diferente tamaño de chunk optimo, esto no es universal. */
-    chunkTranscript(text, maxChars = 12000) {
-        const sentences = text
-            .replace(/\s+/g, ' ')
-            .replace(/([.!?])\s+/g, '$1\n')
-            .split('\n');
-
-        const chunks = [];
-        let current = '';
-
-        for (const s of sentences) {
-            if ((current + s).length > maxChars) {
-                chunks.push(current.trim());
-                current = s;
-            } else {
-                current += (current ? ' ' : '') + s;
-            }
-        }
-
-        if (current.trim()) {
-            chunks.push(current.trim());
-        }
-
-        return chunks;
+     * modelo, diferente tamaño de chunk optimo, esto no es universal.
+     *
+     * El default es REWRITE_CHUNK_CHARS — antes esta etapa y el map de SummarizeStage compartian
+     * una sola constante (TRANSCRIPT_CHUNK_CHARS), pero un barrido real demostro que el chunk
+     * optimo de Summarize es 92.000, muy por encima de los 32.000 donde ESTA etapa ya colapsa en
+     * repeticion (medido arriba) — los dos optimos divergen de verdad, asi que ahora son
+     * constantes separadas y explicitas, no una compartida por coincidencia. */
+    chunkTranscript(text, maxChars = REWRITE_CHUNK_CHARS) {
+        return chunkBySentences(text, maxChars);
     }
 
     /** The chunk rewrite asks for Markdown prose and NOTHING else — no JSON wrapper.
@@ -1574,7 +2098,10 @@ export class RewriteStage extends AiJobStage {
                 console.warn(`⚠️ videoId mismatch: filename=${videoId}, json=${data.videoId}`);
             }
 
-            const { chunks: fullContentChunks, model, client } = await this.buildRawTranscript(data.transcript) || { chunks: [] };
+            // Red de seguridad para ficheros ya en disco de antes del fix en _parseSubtitleContent
+            // — idempotente, no hace nada si el transcript ya viene limpio.
+            const transcript = collapseRollingCaptions(data.transcript);
+            const { chunks: fullContentChunks, model, client } = await this.buildRawTranscript(transcript) || { chunks: [] };
 
             // A diferencia de SummarizeStage, esto NO repite todo el download/output — el
             // resumen ya lo hace (ver SummarizeStage), asi que aqui solo va lo que le falta a
@@ -1603,6 +2130,41 @@ export class RewriteStage extends AiJobStage {
     }
 }
 
+/** Reads the TITLE / LANGUAGE / SUMMARY: shape that SummarizeStage.buildPrompt asks for.
+ *
+ * This replaced a JSON parse guarded by three escalating repair passes (a string-escaping state
+ * machine, a "content"-value regex rewrite, and a code-fence stripper). They existed because the
+ * summary's Markdown had to survive being quoted inside JSON, and they still lost two of three
+ * videos in one run. Here the scalars are two anchored lines and the prose is simply the rest of
+ * the message, so nothing about the summary's own punctuation can break parsing.
+ *
+ * The scalars are tolerant on purpose — leading indentation, optional bold, `**TITLE:**` — but
+ * the SUMMARY: marker is required: without it there is no way to tell where prose begins, and
+ * guessing would silently fold the title line into the body. Module-level (not a method) so
+ * server.js can parse a `.summary-part.json` straight from disk for the "leer ya, aunque
+ * Rewrite/Fusion no hayan terminado" preview, without needing an InterpretSummaryStage instance. */
+export function parseSummaryOutput(raw) {
+    if (!raw || !raw.trim()) throw new Error("Invalid AI output: empty summary response");
+
+    const scalar = (field) => {
+        const m = raw.match(new RegExp(`^[ \\t>*_]*${field}\\s*:?\\**\\s*:?[ \\t]*(.+?)[ \\t]*$`, 'im'));
+        return m ? m[1].replace(/^\**|\**$/g, '').trim() : '';
+    };
+
+    const marker = raw.match(/^[ \t>*_]*SUMMARY\s*:?\**\s*:?[ \t]*$/im);
+    if (!marker) {
+        throw new Error(
+            `Invalid AI output: no SUMMARY: marker found, so the prose body cannot be located ` +
+            `(response started with: ${raw.trim().slice(0, 120).replace(/\n/g, ' ')})`
+        );
+    }
+
+    const body = raw.slice(marker.index + marker[0].length).trim();
+    if (!body) throw new Error("Invalid AI output: SUMMARY: marker present but the body is empty");
+
+    return { title: scalar('TITLE'), language: scalar('LANGUAGE'), content: body };
+}
+
 export class InterpretSummaryStage extends BaseStage {
     constructor(logger) {
         super({
@@ -1614,37 +2176,8 @@ export class InterpretSummaryStage extends BaseStage {
         });
     }
 
-    /** Reads the TITLE / LANGUAGE / SUMMARY: shape that SummarizeStage.buildPrompt asks for.
-     *
-     * This replaced a JSON parse guarded by three escalating repair passes (a string-escaping state
-     * machine, a "content"-value regex rewrite, and a code-fence stripper). They existed because the
-     * summary's Markdown had to survive being quoted inside JSON, and they still lost two of three
-     * videos in one run. Here the scalars are two anchored lines and the prose is simply the rest of
-     * the message, so nothing about the summary's own punctuation can break parsing.
-     *
-     * The scalars are tolerant on purpose — leading indentation, optional bold, `**TITLE:**` — but
-     * the SUMMARY: marker is required: without it there is no way to tell where prose begins, and
-     * guessing would silently fold the title line into the body. */
     parseSummary(raw) {
-        if (!raw || !raw.trim()) throw new Error("Invalid AI output: empty summary response");
-
-        const scalar = (field) => {
-            const m = raw.match(new RegExp(`^[ \\t>*_]*${field}\\s*:?\\**\\s*:?[ \\t]*(.+?)[ \\t]*$`, 'im'));
-            return m ? m[1].replace(/^\**|\**$/g, '').trim() : '';
-        };
-
-        const marker = raw.match(/^[ \t>*_]*SUMMARY\s*:?\**\s*:?[ \t]*$/im);
-        if (!marker) {
-            throw new Error(
-                `Invalid AI output: no SUMMARY: marker found, so the prose body cannot be located ` +
-                `(response started with: ${raw.trim().slice(0, 120).replace(/\n/g, ' ')})`
-            );
-        }
-
-        const body = raw.slice(marker.index + marker[0].length).trim();
-        if (!body) throw new Error("Invalid AI output: SUMMARY: marker present but the body is empty");
-
-        return { title: scalar('TITLE'), language: scalar('LANGUAGE'), content: body };
+        return parseSummaryOutput(raw);
     }
 
     /** The chunks arrive as plain Markdown in the order they were generated, so "assembling" is a
@@ -1688,18 +2221,27 @@ export class InterpretSummaryStage extends BaseStage {
             // The .md used to hold only the short summary, while the email template pulled BOTH
             // summaryBody and fullContent — so the file on disk silently lacked the transcript
             // rewrite that took the bulk of the run's compute. Same document in both places now.
+            const transcriptHeading = rewriteData.rewriteSkipped
+                ? '## Transcripción original (sin pulir — Reescritura/Traducción omitida)'
+                : '## Transcripción completa';
             const markdown = [
                 `# ${title}`,
                 parsed.content,
-                fullContent ? `---\n\n## Transcripción completa\n\n${fullContent}` : '',
+                fullContent ? `---\n\n${transcriptHeading}\n\n${fullContent}` : '',
             ].filter(Boolean).join('\n\n');
 
             // `model`/`client` combinados para lo que ya muestra la UI (una sola insignia por
             // tarjeta) — summaryModel/rewriteModel se guardan aparte para quien quiera el
-            // detalle exacto de cual modelo hizo cada mitad.
+            // detalle exacto de cual modelo hizo cada mitad. rewriteSkipped (ver skipRewrite en
+            // server.js, boton "usar sin pulir") no tiene modelo que combinar — no hubo llamada
+            // de IA, es literalmente el transcript crudo — asi que el resumen manda solo.
             const sameModel = summaryData.summaryModel === rewriteData.rewriteModel;
-            const model = sameModel ? summaryData.summaryModel : `${summaryData.summaryModel} + ${rewriteData.rewriteModel}`;
-            const client = sameModel ? summaryData.summaryClient : `${summaryData.summaryClient} + ${rewriteData.rewriteClient}`;
+            const model = rewriteData.rewriteSkipped
+                ? summaryData.summaryModel
+                : (sameModel ? summaryData.summaryModel : `${summaryData.summaryModel} + ${rewriteData.rewriteModel}`);
+            const client = rewriteData.rewriteSkipped
+                ? summaryData.summaryClient
+                : (sameModel ? summaryData.summaryClient : `${summaryData.summaryClient} + ${rewriteData.rewriteClient}`);
 
             const enrichedData = {
                 ...summaryData,
@@ -1711,6 +2253,7 @@ export class InterpretSummaryStage extends BaseStage {
                 summaryClient: summaryData.summaryClient,
                 rewriteModel: rewriteData.rewriteModel,
                 rewriteClient: rewriteData.rewriteClient,
+                rewriteSkipped: Boolean(rewriteData.rewriteSkipped),
                 summaryBody: parsed.content || "",
                 fullContent: fullContent,
                 markdown,
@@ -1734,6 +2277,162 @@ export class InterpretSummaryStage extends BaseStage {
     }
 }
 
+/** Construye el HTML del email — pura, sin enviar ni tocar disco. Extraida de EmailStage.execute
+ * para poder generar una vista previa ANTES de que EmailStage exista de verdad (server.js la usa
+ * con los datos parciales de un video que solo tiene el resumen listo, ver /api/videos/:id/data)
+ * sin arriesgarse a mandar un correo real por accidente — esta funcion no tiene transporter ni
+ * conoce EMAIL_CONFIG. */
+export function buildEmailHtml({ videoId, title, model, client, summaryBody, fullContent }) {
+    const thumbnailUrl = `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg`;
+    const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
+
+    // summaryBody, NOT markdown: this template lays out the two parts itself, with its own
+    // "Contenido completo" heading before fullContentHtml below. `markdown` is the complete
+    // standalone document (summary + transcript) for the .md file, so using it here would
+    // render the whole transcript twice.
+    const bodyHtml = marked(summaryBody || '');
+    const fullContentHtml = marked((fullContent || '') + "\n\n");
+
+    // Estilo minimalista 2026 (referencia: redesign.md). Sin boton rojo, sin serif, sin
+    // bordes negros de 1px — un link mono sutil en vez del botón, y las imágenes que
+    // vengan dentro del markdown (diagramas tipo RAG) entran en una card blanca con
+    // borde en vez de flotar sueltas. Email, no web: todo el CSS va inline/en <style>
+    // dentro de <head>, sin depender de nada externo salvo la fuente de Google Fonts
+    // (con una pila de fallback de sistema por si el cliente de correo la bloquea).
+    return `
+    <!DOCTYPE html>
+    <html>
+    <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!-- Gmail, Apple Mail y Outlook.com "adivinan" un tema oscuro para el email y reescriben los
+         colores por su cuenta si no les dices lo contrario — estas dos lineas son las que
+         reconocen la mayoria de clientes para decir "este email YA esta diseñado, no lo toques". -->
+    <meta name="color-scheme" content="light only">
+    <meta name="supported-color-schemes" content="light only">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <style>
+        /* Misma identidad que la app (globals.css): violet #5B4FE5, Fraunces para titulos,
+           IBM Plex Sans para el cuerpo — el email dejo de ser un documento aparte con su
+           propia paleta gris/Inter, ahora se reconoce como la misma herramienta. */
+        body {
+            margin: 0; padding: 40px 16px; background: #F6F6FB !important;
+            font-family: 'IBM Plex Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            color: #191A2E !important;
+        }
+        .mono { font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+        .container { background: #FFFFFF !important; max-width: 600px; margin: 0 auto; border-radius: 16px; padding: 32px; border: 1px solid #E2E1F0; }
+        /* El transcript completo va en su PROPIA tarjeta, no metida dentro de la del resumen —
+           dos .container separados, con el fondo de la pagina (#F6F6FB) de por medio como hueco
+           real entre las dos, no un panel anidado con borde dentro del mismo bloque. */
+        .container + .container { margin-top: 32px; }
+        .container h2:first-child { margin-top: 0; }
+        /* Tinte violeta-grisaceo (el --color-accent de la app) en vez de un gris neutro — sigue
+           siendo claramente distinto del blanco de arriba, pero ahora es "de la casa" en vez de
+           un gris cualquiera. */
+        .container-full { background: #ECEBF7 !important; border: 1px solid #D3D0EE; }
+        .transcript-note { margin: -2px 0 20px; font-size: 13px; color: #676A85 !important; }
+        .thumb-link { display: block; }
+        .thumb { width: 100%; border-radius: 12px; display: block; }
+        .yt-link {
+            display: inline-block; margin-top: 16px; font-size: 13px; font-weight: 500; color: #5B4FE5 !important;
+            text-decoration: none; letter-spacing: 0.01em;
+        }
+        .yt-link:hover { color: #4A3FD1 !important; }
+        h1 {
+            font-family: 'Fraunces', 'Iowan Old Style', Georgia, serif;
+            font-size: 30px; font-weight: 600; letter-spacing: -0.01em; line-height: 1.25;
+            color: #191A2E !important; margin: 18px 0 10px;
+        }
+        h2 {
+            font-family: 'Fraunces', 'Iowan Old Style', Georgia, serif;
+            font-size: 20px; font-weight: 600; color: #191A2E !important; margin: 0 0 4px;
+        }
+        p { font-size: 15px; line-height: 26px; color: #191A2E !important; margin: 0 0 16px; }
+        ul, ol { padding-left: 20px; margin: 0 0 16px; }
+        li { font-size: 15px; line-height: 26px; color: #191A2E !important; margin-bottom: 12px; }
+        a { color: #5B4FE5 !important; }
+        strong { color: #191A2E !important; font-weight: 600; }
+        hr { border: none; border-top: 1px solid #E2E1F0; margin: 28px 0; }
+        /* Cualquier imagen dentro del contenido (diagramas, capturas) va en una card con borde,
+           en vez de suelta a ancho completo — esto cubre el diagrama RAG y cualquier otro. */
+        .content img {
+            display: block; max-width: 100%; border: 1px solid #E2E1F0; border-radius: 12px;
+            padding: 8px; background: #FFFFFF !important; margin: 8px 0 16px;
+        }
+        .footer {
+            margin-top: 32px; padding-top: 18px; border-top: 1px solid #D3D0EE;
+            display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+            font-size: 12px; color: #676A85 !important;
+        }
+        .footer-tag {
+            display: inline-block; padding: 2px 8px; border-radius: 999px; background: #FFFFFF !important;
+            border: 1px solid #D3D0EE; color: #5B4FE5 !important; font-size: 11px;
+        }
+        @media (max-width: 480px) {
+            body { padding: 20px 8px; }
+            .container { padding: 20px; border-radius: 12px; }
+            h1 { font-size: 25px; }
+            h2 { font-size: 18px; }
+        }
+        /* Apple Mail y algunos clientes ignoran las meta tags de arriba y aplican su propio
+           "smart dark mode" via esta media query — reafirmar los MISMOS colores claros aqui
+           adentro, con !important, es lo que realmente los neutraliza (en vez de dejarles la
+           puerta abierta a adivinar el negativo de cada color ellos solos). */
+        @media (prefers-color-scheme: dark) {
+            body { background: #F6F6FB !important; color: #191A2E !important; }
+            .container { background: #FFFFFF !important; border-color: #E2E1F0 !important; }
+            .container-full { background: #ECEBF7 !important; border-color: #D3D0EE !important; }
+            .transcript-note { color: #676A85 !important; }
+            .yt-link { color: #5B4FE5 !important; }
+            .yt-link:hover { color: #4A3FD1 !important; }
+            h1, h2, strong { color: #191A2E !important; }
+            a { color: #5B4FE5 !important; }
+            p, li { color: #191A2E !important; }
+            .content img { background: #FFFFFF !important; }
+            .footer { color: #676A85 !important; border-top-color: #D3D0EE !important; }
+            .footer-tag { background: #FFFFFF !important; border-color: #D3D0EE !important; color: #5B4FE5 !important; }
+        }
+        /* Outlook.com (web) marca los elementos que reescribio en modo oscuro con estos
+           atributos generados — pisarlos de vuelta a los colores reales es el unico gancho
+           documentado para ese cliente en concreto. */
+        [data-ogsc] body { background: #F6F6FB !important; }
+        [data-ogsc] .container { background: #FFFFFF !important; }
+        [data-ogsc] .container-full { background: #ECEBF7 !important; border: 1px solid #D3D0EE !important; }
+        [data-ogsc] h1, [data-ogsc] h2, [data-ogsc] p, [data-ogsc] li, [data-ogsc] a, [data-ogsc] strong {
+            color: #191A2E !important;
+        }
+    </style>
+    </head>
+    <body>
+        <div class="container">
+            <a class="thumb-link" href="${videoUrl}">
+                <img class="thumb" src="${thumbnailUrl}" alt="" />
+            </a>
+            <a class="yt-link mono" href="${videoUrl}">Ver en YouTube</a>
+
+            <h1>${title}</h1>
+
+            <div class="content">${bodyHtml}</div>
+        </div>
+
+        <div class="container container-full">
+            <h2>Contenido completo</h2>
+            <p class="transcript-note">Transcripción sin editar — referencia, no la versión pulida.</p>
+
+            <div class="content">${fullContentHtml}</div>
+
+            <div class="footer">
+                <span class="mono footer-tag">${videoId}</span>
+                <span class="mono">${model || 'N/A'}${client ? ` via ${client}` : ''}</span>
+            </div>
+        </div>
+    </body>
+    </html>
+                `;
+}
+
 export class EmailStage extends BaseStage {
     constructor(logger) {
         super({
@@ -1753,153 +2452,28 @@ export class EmailStage extends BaseStage {
     async execute(anchorPath) {
         const videoId = extractVideoIdFromPath(anchorPath);
 
-        const enrichedJsonPath = path.join(
-            this.inputDir,
-            `${videoId}.enriched.json`
-        );
-
-        const mdPath = path.join(
-            this.inputDir,
-            `${videoId}.summary.md`
-        );
-
-        const transporter = nodemailer.createTransport({
-            service: 'gmail',
-            auth: { user: EMAIL_USER, pass: EMAIL_PASS }
-        });
+        const enrichedJsonPath = path.join(this.inputDir, `${videoId}.enriched.json`);
+        const mdPath = path.join(this.inputDir, `${videoId}.summary.md`);
 
         try {
-            // --- cargar inputs ---
-            const [enrichedJson, markdown] = await Promise.all([
+            const [enrichedJson] = await Promise.all([
                 fs.readFile(enrichedJsonPath, 'utf-8'),
-                fs.readFile(mdPath, 'utf-8')
+                fs.access(mdPath), // el .md tiene que existir aunque no se lea aqui — se mueve mas abajo
             ]);
 
             const enrichedData = JSON5.parse(enrichedJson);
-
             const title = enrichedData.title || 'YouTube Summary';
 
-            // --- render and send HTML ---
-            const thumbnailUrl = `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg`;
-            const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
+            const finalHtml = buildEmailHtml({
+                videoId,
+                title,
+                model: enrichedData.model,
+                client: enrichedData.client,
+                summaryBody: enrichedData.summaryBody,
+                fullContent: enrichedData.fullContent,
+            });
 
-            // 3) Convert Markdown → HTML
-            // summaryBody, NOT markdown: this template lays out the two parts itself, with its own
-            // "Contenido completo" heading before fullContentHtml below. `markdown` is now the
-            // complete standalone document (summary + transcript) for the .md file, so using it here
-            // would render the whole transcript twice.
-            const bodyHtml = marked(enrichedData.summaryBody || '');
-
-            // console.log(`   fullContent for: ${enrichedData.fullContent.substring(0, 120)}...`,);
-            const fullContentHtml = marked(enrichedData.fullContent + "\n\n");
-
-            // 4) Build HTML Email
-            // Estilo minimalista 2026 (referencia: redesign.md). Sin boton rojo, sin serif, sin
-            // bordes negros de 1px — un link mono sutil en vez del botón, y las imágenes que
-            // vengan dentro del markdown (diagramas tipo RAG) entran en una card blanca con
-            // borde en vez de flotar sueltas. Email, no web: todo el CSS va inline/en <style>
-            // dentro de <head>, sin depender de nada externo salvo la fuente de Google Fonts
-            // (con una pila de fallback de sistema por si el cliente de correo la bloquea).
-            const finalHtml = `
-    <!DOCTYPE html>
-    <html>
-    <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <!-- Gmail, Apple Mail y Outlook.com "adivinan" un tema oscuro para el email y reescriben los
-         colores por su cuenta si no les dices lo contrario — estas dos lineas son las que
-         reconocen la mayoria de clientes para decir "este email YA esta diseñado, no lo toques". -->
-    <meta name="color-scheme" content="light only">
-    <meta name="supported-color-schemes" content="light only">
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-    <style>
-        body {
-            margin: 0; padding: 32px 16px; background: #FAFAFA !important;
-            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
-            color: #3F3F46 !important;
-        }
-        .mono { font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-        .container { background: #FFFFFF !important; max-width: 600px; margin: 0 auto; border-radius: 16px; padding: 32px; }
-        .thumb-link { display: block; }
-        .thumb { width: 100%; border-radius: 12px; display: block; }
-        .yt-link {
-            display: inline-block; margin-top: 16px; font-size: 13px; color: #71717A !important;
-            text-decoration: none; letter-spacing: 0.01em;
-        }
-        .yt-link:hover { color: #18181B !important; }
-        h1 { font-size: 28px; font-weight: 700; letter-spacing: -0.01em; color: #18181B !important; margin: 16px 0 8px; }
-        h2 { font-size: 20px; font-weight: 600; color: #18181B !important; margin: 32px 0 12px; }
-        p { font-size: 15px; line-height: 26px; color: #3F3F46 !important; margin: 0 0 16px; }
-        ul, ol { padding-left: 20px; margin: 0 0 16px; }
-        li { font-size: 15px; line-height: 26px; color: #3F3F46 !important; margin-bottom: 12px; }
-        a { color: #18181B !important; }
-        strong { color: #18181B !important; font-weight: 600; }
-        hr { border: none; border-top: 1px solid #E4E4E7; margin: 28px 0; }
-        /* Cualquier imagen dentro del contenido (diagramas, capturas) va en una card con borde,
-           en vez de suelta a ancho completo — esto cubre el diagrama RAG y cualquier otro. */
-        .content img {
-            display: block; max-width: 100%; border: 1px solid #E4E4E7; border-radius: 12px;
-            padding: 8px; background: #FFFFFF !important; margin: 8px 0 16px;
-        }
-        .footer {
-            margin-top: 40px; padding-top: 20px; border-top: 1px solid #E4E4E7;
-            font-size: 11px; color: #A1A1AA !important;
-        }
-        @media (max-width: 480px) {
-            body { padding: 16px 8px; }
-            .container { padding: 20px; border-radius: 12px; }
-            h1 { font-size: 24px; }
-            h2 { font-size: 18px; }
-        }
-        /* Apple Mail y algunos clientes ignoran las meta tags de arriba y aplican su propio
-           "smart dark mode" via esta media query — reafirmar los MISMOS colores claros aqui
-           adentro, con !important, es lo que realmente los neutraliza (en vez de dejarles la
-           puerta abierta a adivinar el negativo de cada color ellos solos). */
-        @media (prefers-color-scheme: dark) {
-            body { background: #FAFAFA !important; color: #3F3F46 !important; }
-            .container { background: #FFFFFF !important; }
-            .yt-link { color: #71717A !important; }
-            .yt-link:hover { color: #18181B !important; }
-            h1, h2, a, strong { color: #18181B !important; }
-            p, li { color: #3F3F46 !important; }
-            .content img { background: #FFFFFF !important; }
-            .footer { color: #A1A1AA !important; }
-        }
-        /* Outlook.com (web) marca los elementos que reescribio en modo oscuro con estos
-           atributos generados — pisarlos de vuelta a los colores reales es el unico gancho
-           documentado para ese cliente en concreto. */
-        [data-ogsc] body, [data-ogsc] .container { background: #FFFFFF !important; }
-        [data-ogsc] h1, [data-ogsc] h2, [data-ogsc] p, [data-ogsc] li, [data-ogsc] a, [data-ogsc] strong {
-            color: #18181B !important;
-        }
-    </style>
-    </head>
-    <body>
-        <div class="container">
-            <a class="thumb-link" href="${videoUrl}">
-                <img class="thumb" src="${thumbnailUrl}" alt="" />
-            </a>
-            <a class="yt-link mono" href="${videoUrl}">Ver en YouTube →</a>
-
-            <h1>${title}</h1>
-
-            <div class="content">${bodyHtml}</div>
-
-            <h2>Contenido completo</h2>
-
-            <div class="content">${fullContentHtml}</div>
-
-            <p class="footer mono">
-                Video ID: ${videoId} · Model: ${enrichedData.model || 'N/A'} · Client: ${enrichedData.client || 'N/A'}
-            </p>
-        </div>
-    </body>
-    </html>
-                `;
-
-            // 5) Send email
-            await transporter.sendMail({
+            await this.transporter.sendMail({
                 from: EMAIL_USER,
                 to: EMAIL_CONFIG.to,
                 bcc: EMAIL_CONFIG.bcc,

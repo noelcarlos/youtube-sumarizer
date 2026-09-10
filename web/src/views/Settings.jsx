@@ -2,17 +2,17 @@
 
 import { useEffect, useState } from 'react';
 import { useTranslations } from 'next-intl';
-import { Loader2, Pause, Play, RotateCcw, Settings as SettingsIcon } from 'lucide-react';
-import { Sheet, SheetContent } from './ui/sheet.jsx';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from './ui/tabs.jsx';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select.jsx';
-import { Switch } from './ui/switch.jsx';
+import { Loader2, Pause, Play, RotateCcw } from 'lucide-react';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs.jsx';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select.jsx';
+import { Switch } from '../components/ui/switch.jsx';
+import { AppHeader } from '../components/AppHeader.jsx';
 import { useSettings } from '../hooks/useSettings.js';
 
 const PROVIDERS = ['lmstudio', 'nvidia', 'gemini', 'deepseek'];
 
 // Cada etapa pausable, junto con la clave de traduccion de su nombre — mismo orden que el
-// pipeline avanza (descarga -> resumen/reescritura EN PARALELO -> interpretar -> email).
+// pipeline avanza (descarga -> resumen/reescritura EN PARALELO -> fusion -> email).
 const QUEUE_STAGES = [
   { key: 'DOWNLOAD', labelKey: 'queueDownload' },
   { key: 'SUMMARIZE', labelKey: 'queueSummarize' },
@@ -21,66 +21,58 @@ const QUEUE_STAGES = [
   { key: 'EMAIL', labelKey: 'queueEmail' },
 ];
 
-export function SettingsDrawer() {
+/** Pagina propia, no un drawer: un panel deslizante de 420px no tenia scroll propio decente para
+ * dos secciones LLM + 5 filas de colas, y tapaba la cabecera. Mismo patron que Suscripciones
+ * (ver src/views/Subscriptions.jsx) — AppHeader se queda puesta, el contenido hace scroll normal
+ * de pagina. */
+export function Settings() {
   const t = useTranslations('SettingsDrawer');
-  const [open, setOpen] = useState(false);
   const { settings, error, loading, save } = useSettings();
 
   return (
-    <>
-      <button
-        onClick={() => setOpen(true)}
-        title={t('openTitle')}
-        aria-label={t('openTitle')}
-        className="flex flex-shrink-0 items-center justify-center rounded-full p-1.5 text-muted transition-colors hover:bg-accent hover:text-text"
-      >
-        <SettingsIcon size={16} />
-      </button>
+    <div className="min-h-screen w-full bg-bg">
+      <AppHeader />
 
-      <Sheet open={open} onOpenChange={setOpen}>
-        <SheetContent side="right" className="w-full gap-0 p-0 sm:max-w-none sm:w-[420px]">
-          <div className="border-b border-border px-6 py-4">
-            <h2 className="text-lg font-semibold tracking-tight text-text">{t('title')}</h2>
+      <main className="mx-auto w-full max-w-2xl px-4 py-8 pb-20 sm:px-6">
+        <h2 className="mb-6 font-serif text-xl font-semibold tracking-tight text-text">{t('title')}</h2>
+
+        {loading && (
+          <div className="flex items-center justify-center py-12 text-muted">
+            <Loader2 size={18} className="mr-2 animate-spin" /> {t('loading')}
           </div>
+        )}
+        {error && <div className="text-sm text-error">{t('loadFailed', { error })}</div>}
 
-          {loading && (
-            <div className="flex flex-1 items-center justify-center text-muted">
-              <Loader2 size={18} className="mr-2 animate-spin" /> {t('loading')}
-            </div>
-          )}
-          {error && <div className="p-6 text-sm text-error">{t('loadFailed', { error })}</div>}
+        {settings && (
+          <Tabs defaultValue="llm" className="flex flex-col">
+            <TabsList className="mb-6 w-fit bg-secondary text-muted">
+              <TabsTrigger value="llm">{t('tabLlm')}</TabsTrigger>
+              <TabsTrigger value="queues">{t('tabQueues')}</TabsTrigger>
+              <TabsTrigger value="email">{t('tabEmail')}</TabsTrigger>
+            </TabsList>
 
-          {settings && (
-            <Tabs defaultValue="llm" className="flex flex-1 flex-col overflow-hidden">
-              <TabsList className="mx-6 mt-3 w-fit bg-secondary text-muted">
-                <TabsTrigger value="llm">{t('tabLlm')}</TabsTrigger>
-                <TabsTrigger value="queues">{t('tabQueues')}</TabsTrigger>
-                <TabsTrigger value="email">{t('tabEmail')}</TabsTrigger>
-              </TabsList>
-
-              <TabsContent value="llm" className="flex-1 overflow-y-auto p-6">
-                <div className="flex flex-col gap-6">
-                  <div>
-                    <h3 className="mb-3 text-sm font-semibold text-text">{t('llmStageSummarize')}</h3>
-                    <LlmTab stageKey="summarize" settings={settings} save={save} t={t} />
-                  </div>
-                  <div className="border-t border-border pt-6">
-                    <h3 className="mb-3 text-sm font-semibold text-text">{t('llmStageRewrite')}</h3>
-                    <LlmTab stageKey="rewrite" settings={settings} save={save} t={t} />
-                  </div>
+            <TabsContent value="llm">
+              <div className="flex flex-col gap-6">
+                <div>
+                  <h3 className="mb-3 text-sm font-semibold text-text">{t('llmStageSummarize')}</h3>
+                  <LlmTab stageKey="summarize" settings={settings} save={save} t={t} />
                 </div>
-              </TabsContent>
-              <TabsContent value="queues" className="flex-1 overflow-y-auto p-6">
-                <QueuesTab settings={settings} save={save} t={t} />
-              </TabsContent>
-              <TabsContent value="email" className="flex-1 overflow-y-auto p-6">
-                <EmailTab settings={settings} save={save} t={t} />
-              </TabsContent>
-            </Tabs>
-          )}
-        </SheetContent>
-      </Sheet>
-    </>
+                <div className="border-t border-border pt-6">
+                  <h3 className="mb-3 text-sm font-semibold text-text">{t('llmStageRewrite')}</h3>
+                  <LlmTab stageKey="rewrite" settings={settings} save={save} t={t} />
+                </div>
+              </div>
+            </TabsContent>
+            <TabsContent value="queues">
+              <QueuesTab settings={settings} save={save} t={t} />
+            </TabsContent>
+            <TabsContent value="email">
+              <EmailTab settings={settings} save={save} t={t} />
+            </TabsContent>
+          </Tabs>
+        )}
+      </main>
+    </div>
   );
 }
 
@@ -249,6 +241,8 @@ function LlmTab({ stageKey, settings, save, t }) {
 function QueuesTab({ settings, save, t }) {
   const [paused, setPaused] = useState(settings.paused);
   const [pending, setPending] = useState(null); // stage key currently toggling, o 'all'
+  const [parallelLocal, setParallelLocal] = useState(settings.parallelLocalInference);
+  const [togglingParallel, setTogglingParallel] = useState(false);
 
   async function toggle(stageKey, value) {
     setPending(stageKey);
@@ -262,9 +256,20 @@ function QueuesTab({ settings, save, t }) {
     }
   }
 
+  async function toggleParallelLocal(value) {
+    setTogglingParallel(true);
+    try {
+      const view = await save({ parallelLocalInference: value });
+      setParallelLocal(view.parallelLocalInference);
+    } catch {
+    } finally {
+      setTogglingParallel(false);
+    }
+  }
+
   // Un problema de conexion o el modelo local caido afecta a TODO el pipeline, no solo a una
-  // etapa — antes hacia falta apagar los 4 switches uno a uno; esto manda un solo PATCH con las
-  // 4 etapas a la vez, para poder frenar todo de un click mientras se arregla lo que sea.
+  // etapa — antes hacia falta apagar los 5 switches uno a uno; esto manda un solo PATCH con las
+  // 5 etapas a la vez, para poder frenar todo de un click mientras se arregla lo que sea.
   const allPaused = QUEUE_STAGES.every(({ key }) => paused[key]);
 
   async function toggleAll() {
@@ -288,7 +293,7 @@ function QueuesTab({ settings, save, t }) {
         onClick={toggleAll}
         disabled={pending === 'all'}
         className={
-          'flex items-center justify-center gap-2 rounded-xl px-4 py-2 text-sm font-medium transition-colors disabled:opacity-60 ' +
+          'flex items-center justify-center gap-2 rounded-sm px-4 py-2 text-sm font-medium transition-colors disabled:opacity-60 ' +
           (allPaused
             ? 'bg-primary text-primary-foreground hover:bg-primary-hover'
             : 'border border-error/30 bg-error/10 text-error hover:bg-error/20')
@@ -297,7 +302,7 @@ function QueuesTab({ settings, save, t }) {
         {allPaused ? <Play size={14} /> : <Pause size={14} />}
         {allPaused ? t('resumeAll') : t('pauseAll')}
       </button>
-      <div className="flex flex-col divide-y divide-border rounded-xl border border-border">
+      <div className="flex flex-col divide-y divide-border rounded-sm border border-border">
         {QUEUE_STAGES.map(({ key, labelKey }) => (
           <div key={key} className="flex items-center justify-between gap-3 px-4 py-3">
             <div>
@@ -311,6 +316,18 @@ function QueuesTab({ settings, save, t }) {
             />
           </div>
         ))}
+      </div>
+
+      <div className="mt-2 flex items-center justify-between gap-3 rounded-sm border border-border px-4 py-3">
+        <div>
+          <div className="text-sm font-medium text-text">{t('parallelLocalInference')}</div>
+          <div className="text-xs text-muted">{t('parallelLocalInferenceHint')}</div>
+        </div>
+        <Switch
+          checked={parallelLocal}
+          disabled={togglingParallel}
+          onCheckedChange={toggleParallelLocal}
+        />
       </div>
     </div>
   );
@@ -356,7 +373,7 @@ function SaveButton({ status, onSave, t }) {
       <button
         onClick={onSave}
         disabled={status === 'saving'}
-        className="rounded-xl bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary-hover disabled:opacity-60"
+        className="rounded-sm bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary-hover disabled:opacity-60"
       >
         {status === 'saving' ? t('saving') : t('save')}
       </button>

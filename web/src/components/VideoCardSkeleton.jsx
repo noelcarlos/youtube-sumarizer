@@ -2,7 +2,7 @@
 
 export function VideoCardSkeleton() {
   return (
-    <div className="rounded-2xl border border-border bg-card p-4 shadow-[var(--shadow-soft)]">
+    <div className="rounded-md border border-border bg-card p-4 shadow-[var(--shadow-soft)]">
       <div className="mb-3 flex gap-[3px]">
         {[0, 1, 2, 3].map((i) => (
           <div key={i} className="h-1 flex-1 animate-pulse rounded-full bg-secondary" />

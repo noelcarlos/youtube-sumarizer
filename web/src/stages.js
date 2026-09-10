@@ -9,11 +9,12 @@
 // useTranslations() contra messages/es.json|en.json.
 export const PIPELINE_ORDER = ['DOWNLOAD', 'SUMMARIZE', 'REWRITE', 'INTERPRET_SUMMARY', 'EMAIL'];
 
-// Orden VISUAL (tabs y segmentos de la barra de progreso) — al reves del pipeline real, a
-// peticion: lo mas cercano a terminar se ve primero. stationClasses() traduce cada entrada de
-// aqui a su posicion real en PIPELINE_ORDER para pintar done/pending correctamente sin importar
-// en que orden se muestren.
-export const STATIONS = ['EMAIL', 'INTERPRET_SUMMARY', 'REWRITE', 'SUMMARIZE', 'DOWNLOAD'];
+// Orden VISUAL de la cadena de señal de cada tarjeta — igual que PIPELINE_ORDER (izquierda =
+// primero que pasa, derecha = ultimo), porque ahora se dibuja como una cadena real con puntos y
+// linea de conexion: que fluya "hacia atras" (como era antes, lo mas cerca de terminar primero)
+// no tenia sentido visual con ese motivo. stationClasses() sigue traduciendo cada entrada a su
+// posicion real en PIPELINE_ORDER para pintar done/pending sin importar en que orden se muestren.
+export const STATIONS = PIPELINE_ORDER;
 
 // Stage constante -> clave del namespace "Stages"/"StageLabel" en los .json de mensajes.
 export const STAGE_MESSAGE_KEY = {
@@ -25,7 +26,7 @@ export const STAGE_MESSAGE_KEY = {
   DONE: 'done',
 };
 
-export const TABS = ['ALL', 'EMAIL', 'INTERPRET_SUMMARY', 'REWRITE', 'SUMMARIZE', 'DOWNLOAD', 'DONE', 'ERROR'];
+export const TABS = ['ALL', 'DOWNLOAD', 'SUMMARIZE', 'REWRITE', 'INTERPRET_SUMMARY', 'EMAIL', 'DONE', 'ERROR'];
 
 export function matchesTab(video, tabKey) {
   if (tabKey === 'ALL') return true;

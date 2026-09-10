@@ -14,7 +14,9 @@ import { matchesTab, isProcessing } from '../stages.js';
 export function Queue() {
   const t = useTranslations('Queue');
   const { videos, error, loading } = useQueueState();
-  const [tab, setTab] = useState('ALL');
+  // DONE por defecto, no ALL: al entrar lo mas probable es que vengas a LEER algo ya terminado,
+  // no a mirar el estado de la cola — quien quiera ver todo solo tiene que pulsar esa pestaña.
+  const [tab, setTab] = useState('DONE');
   const [readFilter, setReadFilter] = useState('all'); // 'all' | 'unread' | 'read' — solo aplica dentro de Done
   const [readerVideoId, setReaderVideoId] = useState(null);
   const visible = videos
@@ -24,17 +26,18 @@ export function Queue() {
       return readFilter === 'read' ? Boolean(v.readAt) : !v.readAt;
     });
   const activeCount = videos.filter(isProcessing).length;
+  const activeJobs = videos.filter((v) => v.processing && v.aiProgress);
 
   return (
     <div className="min-h-screen w-full bg-bg">
-      <AppHeader center={<><StatusBadge activeCount={activeCount} /><Stepper /></>} />
+      <AppHeader center={<><StatusBadge activeCount={activeCount} /><ActiveJobs jobs={activeJobs} /><Stepper /></>} />
 
       {/* w-full max-w-none a proposito: nada de contenedor centrado con margenes muertos a los
           lados en pantallas anchas — el espacio extra lo absorbe la grid de tarjetas de mas
           columnas, no un hueco vacio. */}
       <main className="w-full max-w-none px-4 py-8 pb-20 sm:px-6">
         {error && (
-          <p className="mb-4 rounded-xl border border-error/20 bg-error-bg px-3 py-2 text-sm text-error">
+          <p className="mb-4 rounded-sm border border-error/20 bg-error-bg px-3 py-2 text-sm text-error">
             {t('serverError', { error })}
           </p>
         )}
@@ -50,7 +53,7 @@ export function Queue() {
             ))}
           </div>
         ) : visible.length === 0 ? (
-          <div className="rounded-2xl border border-dashed border-border py-16 text-center">
+          <div className="rounded-md border border-dashed border-border py-16 text-center">
             <p className="text-sm text-muted">{videos.length === 0 ? t('emptyAll') : t('emptyTab')}</p>
           </div>
         ) : (
@@ -63,6 +66,37 @@ export function Queue() {
       </main>
 
       <ReaderDrawer videoId={readerVideoId} onClose={() => setReaderVideoId(null)} />
+    </div>
+  );
+}
+
+function formatElapsed(sec) {
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  return m > 0 ? `${m}m${String(s).padStart(2, '0')}s` : `${s}s`;
+}
+
+/** Se ve el "processing (N)" del StatusBadge desde cualquier pestaña, pero para saber SI algo
+ * esta realmente atascado (un chunk que lleva 20 minutos, por ejemplo) antes había que ir a
+ * buscar la tarjeta en la lista — con muchas colas pausadas o filtradas puede ni estar visible.
+ * Esto pone el modelo + tiempo transcurrido de cada job de IA activo directamente en la
+ * cabecera, siempre visible sin tener que hacer scroll. */
+function ActiveJobs({ jobs }) {
+  const tStages = useTranslations('Stages');
+  if (jobs.length === 0) return null;
+  return (
+    <div className="hidden items-center gap-2 overflow-hidden font-mono text-xs text-muted lg:flex">
+      {jobs.map((v) => (
+        <span
+          key={v.videoId}
+          title={`${v.videoId} · ${v.aiProgress.model || ''}`}
+          className="flex flex-shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full border border-border bg-secondary px-2.5 py-1"
+        >
+          <span>{tStages(v.stage === 'REWRITE' ? 'rewrite' : 'summarize')}</span>
+          {v.aiProgress.model && <span className="max-w-[160px] truncate text-text">{v.aiProgress.model}</span>}
+          <span className="text-warn">{formatElapsed(v.aiProgress.elapsedSec)}</span>
+        </span>
+      ))}
     </div>
   );
 }
@@ -111,7 +145,7 @@ function ReadFilter({ videos, active, onChange }) {
     read: done.filter((v) => v.readAt).length,
   };
   return (
-    <div className="-mt-3 mb-6 flex flex-wrap gap-1.5 rounded-xl border border-border bg-secondary/50 p-1.5">
+    <div className="-mt-3 mb-6 flex flex-wrap gap-1.5 rounded-sm border border-border bg-secondary/50 p-1.5">
       {['all', 'unread', 'read'].map((key) => (
         <button
           key={key}

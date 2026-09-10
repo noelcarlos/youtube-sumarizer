@@ -18,7 +18,7 @@ import nodemailer from 'nodemailer';
 import {
     DIRS, initDirs, EventLogger, moveOutputs, fanOutOutputs, runStageWorker, createAiClient, listModels, AI_PROVIDER_DEFAULTS,
     ProcessInputsStage, DownloadStage, SummarizeStage, RewriteStage, InterpretSummaryStage, EmailStage,
-    EMAIL_CONFIG,
+    EMAIL_CONFIG, setLocalMutexEnabled, parseSummaryOutput, buildEmailHtml,
 } from './resumir_video.js';
 
 // 4173 es el default de iron-agile-bot (server/src/index.js) — con los dos corriendo a la vez
@@ -57,6 +57,11 @@ const DEFAULT_SETTINGS = {
     // pausando la etapa que lo usa, pero se ofrecen las 5 porque la misma necesidad aplica a
     // cualquier etapa (por ejemplo, pausar EMAIL mientras se cambia el destinatario aqui mismo).
     paused: { DOWNLOAD: false, SUMMARIZE: false, REWRITE: false, INTERPRET_SUMMARY: false, EMAIL: false },
+    // false = serializar (default seguro): un modelo local grande se atasca o tarda mucho mas si
+    // Summarize y Rewrite le mandan inferencia a la vez. Un modelo pequeño puede tener margen de
+    // sobra para las dos en paralelo sin degradarse — quien sepa que su modelo aguanta eso puede
+    // encenderlo desde Settings > Colas.
+    parallelLocalInference: false,
 };
 
 function mergeLlmStageConfig(parsed) {
@@ -76,6 +81,7 @@ async function loadSettings() {
             },
             email: { ...DEFAULT_SETTINGS.email, ...parsed.email },
             paused: { ...DEFAULT_SETTINGS.paused, ...parsed.paused },
+            parallelLocalInference: parsed.parallelLocalInference ?? DEFAULT_SETTINGS.parallelLocalInference,
         };
     } catch {
         return structuredClone(DEFAULT_SETTINGS);
@@ -83,6 +89,7 @@ async function loadSettings() {
 }
 
 const settings = await loadSettings();
+setLocalMutexEnabled(settings.parallelLocalInference);
 async function persistSettings() {
     await fs.writeFile(SETTINGS_PATH, JSON.stringify(settings, null, 2));
 }
@@ -222,6 +229,7 @@ function settingsView() {
         },
         email: settings.email,
         paused: settings.paused,
+        parallelLocalInference: settings.parallelLocalInference,
     };
 }
 
@@ -257,6 +265,10 @@ async function applySettingsPatch(body) {
     if (body.email?.to !== undefined) EMAIL_CONFIG.to = settings.email.to;
     if (body.email?.bcc !== undefined) EMAIL_CONFIG.bcc = settings.email.bcc;
     if (body.paused) Object.assign(paused, body.paused);
+    if (body.parallelLocalInference !== undefined) {
+        settings.parallelLocalInference = body.parallelLocalInference;
+        setLocalMutexEnabled(settings.parallelLocalInference);
+    }
 
     await persistSettings();
     return settingsView();
@@ -274,7 +286,7 @@ const STAGE_LABEL = {
     DOWNLOAD: 'Descargando',
     SUMMARIZE: 'Resumiendo',
     REWRITE: 'Reescribiendo/Traduciendo',
-    INTERPRET_SUMMARY: 'Interpretando',
+    INTERPRET_SUMMARY: 'Fusionando',
     EMAIL: 'Enviando email',
     DONE: 'Terminado',
 };
@@ -329,6 +341,16 @@ async function buildState() {
         v.paths.push(fullPath);
     };
 
+    // Un .summary-part.json/.rewrite-part.json huerfano (ver isOrphanInterpretPart) no debe
+    // cambiar el stage/bucket mostrado — pero SI acaba de escribirse (la etapa hermana termino
+    // hace instantes), asi que su mtime tiene que contar para `updatedAt`. Sin esto, un video que
+    // termino Resumen hace un minuto seguia mostrando la hora de cuando se creo el .json original
+    // en download/, horas antes — parecia parado cuando en realidad algo SI habia avanzado.
+    const trackMtime = (videoId, fullPath) => {
+        const v = byVideo.get(videoId);
+        if (v) v.paths.push(fullPath);
+    };
+
     for (const stageName of STAGE_ORDER) {
         if (stageName === 'DONE') continue;
         const dirs = DIRS[stageName];
@@ -337,7 +359,10 @@ async function buildState() {
             if (!dirPath) continue;
             const filesInDir = await listDir(dirPath);
             for (const f of filesInDir) {
-                if (stageName === 'INTERPRET_SUMMARY' && bucket === 'INPUT' && isOrphanInterpretPart(f, filesInDir)) continue;
+                if (stageName === 'INTERPRET_SUMMARY' && bucket === 'INPUT' && isOrphanInterpretPart(f, filesInDir)) {
+                    trackMtime(videoIdFromFilename(f), path.join(dirPath, f));
+                    continue;
+                }
                 record(videoIdFromFilename(f), stageName, bucket.toLowerCase(), f, path.join(dirPath, f));
             }
         }
@@ -385,6 +410,11 @@ function activeInfoFor(v) {
                 totalChunks: j.totalChunks,
                 fileSizeBytes: j.fileSizeBytes,
                 elapsedSec: Math.round((Date.now() - j.startedAt) / 1000),
+                // El modelo configurado AHORA para esta etapa — no j.model (eso solo se rellena
+                // en Rewrite tras el PRIMER chunk, asi que durante todo el chunk 1 la UI se
+                // quedaria sin dato). stage.aiClient.modelName ya se conoce desde antes de lanzar
+                // la peticion.
+                model: stage.aiClient.modelName,
             },
         };
     }
@@ -427,13 +457,25 @@ async function enrichVideo(v) {
                 language: data.language || null,
                 // data.model existe una vez que InterpretSummary junto las dos mitades;
                 // summaryModel/rewriteModel es lo que hay ANTES de eso, mientras cada etapa
-                // todavia esta trabajando por su lado.
+                // todavia esta trabajando por su lado. Se exponen los tres: la UI necesita saber
+                // CUAL modelo hizo CUAL trabajo, no solo un "modelo A + modelo B" sin etiquetar.
                 model: data.model || data.summaryModel || data.rewriteModel || null,
+                summaryModel: data.summaryModel || null,
+                rewriteModel: data.rewriteModel || null,
                 url: data.url || null,
             };
         } catch { /* ese candidato no existe o no es JSON — se prueba el siguiente */ }
     }
-    return { ...v, stageLabel: STAGE_LABEL[v.stage] || v.stage, title: null, language: null, model: null, url: null };
+    return {
+        ...v,
+        stageLabel: STAGE_LABEL[v.stage] || v.stage,
+        title: null,
+        language: null,
+        model: null,
+        summaryModel: null,
+        rewriteModel: null,
+        url: null,
+    };
 }
 
 /** Ultimo error registrado para este video en events.log, si lo hay — para que el fallo se
@@ -544,6 +586,75 @@ async function deleteVideo(videoId) {
     return { stage: v.stage, files };
 }
 
+/** "Usar sin pulir": para cuando Resumen ya termino pero Rewrite va lento o se ha atascado, y el
+ * usuario prefiere que el video llegue a DONE/email YA, con el transcript crudo como cuerpo
+ * completo en vez de esperar la reescritura/traduccion fiel. Saca a Rewrite de en medio y
+ * sintetiza el rewrite-part que le falta a Fusion — el resto del pipeline (Fusion, email) no
+ * necesita saber que esto paso, ve un rewrite-part normal, solo que con rewriteModel = null y
+ * el transcript entero como unico chunk. */
+async function skipRewrite(videoId) {
+    const rewriteInputPath = path.join(DIRS.REWRITE.INPUT, `${videoId}.json`);
+    const rewriteErrorPath = path.join(DIRS.REWRITE.ERROR, `${videoId}.json`);
+
+    let rawContent = null;
+    for (const p of [rewriteInputPath, rewriteErrorPath]) {
+        rawContent = await fs.readFile(p, 'utf8').catch(() => null);
+        if (rawContent !== null) break;
+    }
+    if (rawContent === null) {
+        throw Object.assign(
+            new Error(`${videoId} no esta pendiente de reescritura (ni en cola ni en error de Rewrite)`),
+            { status: 409 }
+        );
+    }
+    const data = JSON.parse(rawContent);
+
+    // Si el worker esta trabajando en ESTE video ahora mismo, abortar la peticion en vuelo — su
+    // propio catch intentara mover el input a error, pero eso es un fs.rename con .catch(()=>{})
+    // silencioso (ver moveToError), asi que no pasa nada si para entonces ya lo hemos borrado
+    // nosotros mismos mas abajo.
+    if (rewriter.currentJob?.videoId === videoId) {
+        rewriter.currentJob.abortController.abort();
+    }
+
+    await fs.unlink(rewriteInputPath).catch(() => {});
+    await fs.unlink(rewriteErrorPath).catch(() => {});
+
+    const rewritePart = {
+        videoId,
+        rewriteModel: null,
+        rewriteClient: null,
+        rewriteSkipped: true,
+        rewriteDate: new Date().toISOString(),
+        fullContentChunks: [data.transcript || ''],
+    };
+    await fs.writeFile(
+        path.join(DIRS.INTERPRET_SUMMARY.INPUT, `${videoId}.rewrite-part.json`),
+        JSON.stringify(rewritePart, null, 2)
+    );
+
+    // El relay de Summarize a Interpret corre solo cada ~250ms (ver runStageWorker) — normalmente
+    // el hermano ya esta ahi para cuando se llega aqui, pero si no, se copia a mano en vez de
+    // fiarse de esa carrera.
+    const summaryDest = path.join(DIRS.INTERPRET_SUMMARY.INPUT, `${videoId}.summary-part.json`);
+    const alreadyThere = await fs.access(summaryDest).then(() => true).catch(() => false);
+    if (!alreadyThere) {
+        const summarySrc = await fs.readFile(path.join(DIRS.SUMMARIZE.OUTPUT, `${videoId}.summary-part.json`), 'utf8').catch(() => null);
+        if (summarySrc !== null) await fs.writeFile(summaryDest, summarySrc);
+        // Si tampoco esta ahi, Resumen no ha terminado de verdad todavia — no deberia pasar, la
+        // UI solo ofrece este boton cuando summaryModel ya existe en /api/state.
+    }
+
+    await logger.log({
+        stage: 'Rewrite',
+        status: 'SUCCESS',
+        inputs: [`${videoId}.json`],
+        outputs: [`${videoId}.rewrite-part.json`],
+        note: 'sin pulir — transcript crudo, Rewrite omitido a peticion del usuario',
+        ts: new Date().toISOString(),
+    });
+}
+
 const emailTransporter = nodemailer.createTransport({
     service: 'gmail',
     auth: { user: EMAIL_CONFIG.user, pass: EMAIL_CONFIG.pass },
@@ -627,7 +738,18 @@ const server = http.createServer(async (req, res) => {
             const enriched = await Promise.all(state.map(async (v) => {
                 const e = await enrichVideo(v);
                 if (v.bucket === 'error') e.lastError = await lastErrorFor(v.videoId);
-                return { ...e, ...activeInfoFor(v), readAt: readStatus[v.videoId] || null };
+                return {
+                    ...e,
+                    ...activeInfoFor(v),
+                    readAt: readStatus[v.videoId] || null,
+                    // El modelo configurado AHORA para cada etapa — no lo que summaryModel/
+                    // rewriteModel diga que se uso. Sin esto, un video cuya mitad ya termino con
+                    // un modelo que luego se cambio en Settings se ve indistinguible de uno que
+                    // va a correr (o reintentar) con el modelo actual — la UI no puede avisar de
+                    // que ese dato es historico si no sabe cual es el "actual" para comparar.
+                    currentSummarizeModel: summarizeAiClient.modelName,
+                    currentRewriteModel: rewriteAiClient.modelName,
+                };
             }));
             // El que esta procesando de VERDAD ahora mismo, primero siempre — su fichero de
             // entrada no se toca (mtime) hasta que termina, asi que por updatedAt solo podia
@@ -652,6 +774,16 @@ const server = http.createServer(async (req, res) => {
             return sendJson(res, 200, { cancelling: videoId });
         }
 
+        if (req.method === 'POST' && url.pathname.startsWith('/api/videos/') && url.pathname.endsWith('/skip-rewrite')) {
+            const videoId = url.pathname.split('/')[3];
+            try {
+                await skipRewrite(videoId);
+                return sendJson(res, 200, { skipped: videoId });
+            } catch (err) {
+                return sendJson(res, err.status || 500, { error: err.message });
+            }
+        }
+
         if (req.method === 'GET' && url.pathname.startsWith('/api/videos/')) {
             const parts = url.pathname.split('/'); // ['', 'api', 'videos', ':id', ':kind']
             const videoId = parts[3];
@@ -668,22 +800,75 @@ const server = http.createServer(async (req, res) => {
                     path.join(DIRS.EMAIL.INPUT, `${videoId}.enriched.json`),
                     path.join(DIRS.INTERPRET_SUMMARY.OUTPUT, `${videoId}.enriched.json`),
                 ]);
-                if (enrichedRaw === null) { res.writeHead(404).end('enriched.json no encontrado todavia'); return; }
-                const enriched = JSON.parse(enrichedRaw);
-                const emailHtml = await readFirstExisting([
-                    path.join(DIRS.DONE, `${videoId}.email.html`),
-                    path.join(DIRS.EMAIL.OUTPUT, `${videoId}.email.html`),
+                if (enrichedRaw !== null) {
+                    const enriched = JSON.parse(enrichedRaw);
+                    const emailHtml = await readFirstExisting([
+                        path.join(DIRS.DONE, `${videoId}.email.html`),
+                        path.join(DIRS.EMAIL.OUTPUT, `${videoId}.email.html`),
+                    ]);
+                    return sendJson(res, 200, {
+                        videoId,
+                        url: enriched.url || `https://www.youtube.com/watch?v=${videoId}`,
+                        title: enriched.title || null,
+                        language: enriched.language || null,
+                        model: enriched.model || null,
+                        summaryBody: enriched.summaryBody || '',
+                        fullContent: enriched.fullContent || '',
+                        fullContentIsPreview: false,
+                        markdown: enriched.markdown || '',
+                        emailHtml, // null si aun no se ha enviado
+                        emailIsPreview: false,
+                        readAt: readStatus[videoId] || null,
+                    });
+                }
+
+                // Fusion (o Rewrite) todavia no ha terminado, pero Resumen puede llevar rato
+                // esperando a su hermana — no hay razon para bloquear la lectura hasta que las
+                // dos etapas EN PARALELO terminen si una de las dos ya esta lista. El
+                // ".summary-part.json" solo (sin su pareja ".rewrite-part.json" todavia) vive en
+                // INTERPRET_SUMMARY.INPUT mientras espera, o en SUMMARIZE.OUTPUT en el instante
+                // justo antes de que el worker lo mueva ahi — se comprueban los dos sitios.
+                const summaryPartRaw = await readFirstExisting([
+                    path.join(DIRS.INTERPRET_SUMMARY.INPUT, `${videoId}.summary-part.json`),
+                    path.join(DIRS.SUMMARIZE.OUTPUT, `${videoId}.summary-part.json`),
                 ]);
+                if (summaryPartRaw === null) { res.writeHead(404).end('resumen no encontrado todavia'); return; }
+                const summaryPart = JSON.parse(summaryPartRaw);
+                let parsed;
+                try {
+                    parsed = parseSummaryOutput(summaryPart.rawContent);
+                } catch (err) {
+                    res.writeHead(404).end(`resumen todavia no es legible: ${err.message}`);
+                    return;
+                }
+                const previewTranscript = summaryPart.transcript || '';
+                // Mismo template que el email real (buildEmailHtml, compartida con EmailStage) —
+                // con lo que YA hay (titulo/resumen/transcript crudo) el resultado es casi
+                // idéntico al que se mandaria de verdad, no una maqueta vacia. Nunca se envia ni
+                // se escribe a disco desde aqui, solo se devuelve para que el drawer lo muestre.
+                const previewEmailHtml = buildEmailHtml({
+                    videoId,
+                    title: parsed.title || 'YouTube Summary',
+                    model: summaryPart.summaryModel,
+                    client: summaryPart.summaryClient,
+                    summaryBody: parsed.content || '',
+                    fullContent: previewTranscript,
+                });
                 return sendJson(res, 200, {
                     videoId,
-                    url: enriched.url || `https://www.youtube.com/watch?v=${videoId}`,
-                    title: enriched.title || null,
-                    language: enriched.language || null,
-                    model: enriched.model || null,
-                    summaryBody: enriched.summaryBody || '',
-                    fullContent: enriched.fullContent || '',
-                    markdown: enriched.markdown || '',
-                    emailHtml, // null si aun no se ha enviado
+                    url: summaryPart.url || `https://www.youtube.com/watch?v=${videoId}`,
+                    title: parsed.title || null,
+                    language: parsed.language || null,
+                    model: summaryPart.summaryModel || null,
+                    summaryBody: parsed.content || '',
+                    // El transcript crudo (sin reescribir/traducir) SI existe ya en el
+                    // summary-part — se sirve como vista previa honesta en vez de dejar la
+                    // pestaña de transcripcion vacia hasta que Rewrite termine.
+                    fullContent: previewTranscript,
+                    fullContentIsPreview: true,
+                    markdown: '',
+                    emailHtml: previewEmailHtml,
+                    emailIsPreview: true,
                     readAt: readStatus[videoId] || null,
                 });
             }

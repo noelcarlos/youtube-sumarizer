@@ -31,7 +31,7 @@ export function StageTabs({ videos, active, onChange }) {
             }
           >
             {t(TAB_MESSAGE_KEY[tabKey])}
-            <span className="font-mono text-xs text-muted">{count}</span>
+            <span className={'font-mono text-xs ' + (isActive ? 'text-primary-foreground/70' : 'text-muted')}>{count}</span>
           </button>
         );
       })}

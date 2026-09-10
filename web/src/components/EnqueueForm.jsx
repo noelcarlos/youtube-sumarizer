@@ -60,7 +60,7 @@ export function EnqueueForm({ onEnqueued }) {
     <div className="mb-8">
       <form
         onSubmit={submit}
-        className="flex flex-col gap-1.5 rounded-2xl border border-border bg-card p-1.5 shadow-[var(--shadow-soft)] transition-shadow focus-within:shadow-[var(--shadow-hover)] sm:flex-row sm:items-center"
+        className="flex flex-col gap-1.5 rounded-md border border-border bg-card p-1.5 shadow-[var(--shadow-soft)] transition-shadow focus-within:shadow-[var(--shadow-hover)] sm:flex-row sm:items-center"
       >
         <input
           type="text"
@@ -74,7 +74,7 @@ export function EnqueueForm({ onEnqueued }) {
           <button
             type="submit"
             disabled={pending}
-            className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary-hover disabled:opacity-60 sm:flex-none"
+            className="flex flex-1 items-center justify-center gap-2 rounded-sm bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary-hover disabled:opacity-60 sm:flex-none"
           >
             <Send size={14} />
             {pending ? t('enqueuing') : t('enqueue')}
@@ -85,7 +85,7 @@ export function EnqueueForm({ onEnqueued }) {
             disabled={pending}
             title={t('pasteTitle')}
             aria-label={t('pasteFull')}
-            className="flex flex-1 items-center justify-center gap-2 rounded-xl px-3.5 py-2 text-sm font-medium text-muted transition-colors hover:bg-accent hover:text-text disabled:opacity-60 sm:flex-none"
+            className="flex flex-1 items-center justify-center gap-2 rounded-sm px-3.5 py-2 text-sm font-medium text-muted transition-colors hover:bg-accent hover:text-text disabled:opacity-60 sm:flex-none"
           >
             <Clipboard size={16} />
             <span className="hidden sm:inline">{t('pasteFull')}</span>
