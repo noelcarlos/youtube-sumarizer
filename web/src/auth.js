@@ -22,6 +22,16 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     }),
   ],
   callbacks: {
+    // Sin esto, cualquier cuenta de Google podría entrar -- el middleware solo exige "hay
+    // sesión", no "es tu sesión". ALLOWED_EMAILS separado por comas; vacío/no-definido = nadie
+    // entra (fail-closed), no "todos entran".
+    async signIn({ profile }) {
+      const allowed = (process.env.ALLOWED_EMAILS || '')
+        .split(',')
+        .map((e) => e.trim().toLowerCase())
+        .filter(Boolean);
+      return allowed.includes(profile?.email?.toLowerCase());
+    },
     async jwt({ token, account }) {
       // Solo en el login inicial `account` existe — aqui es donde Google manda el access_token
       // y (si prompt=consent) el refresh_token, que se guardan en el JWT de la sesion.
