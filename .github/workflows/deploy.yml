@@ -1,0 +1,54 @@
+name: Deploy Youtube Sumarizer
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch: {}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: Oracle Cloud MPARUE
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@master
+        timeout-minutes: 20
+        with:
+          host: mparue.com
+          username: ubuntu
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          timeout: 20m
+          script: |
+            set -e
+
+            # Prefijo YOUTUBE_SUMARIZER_ a propósito: titan-badger-global-services es un
+            # docker-compose compartido por varios proyectos, sin ese prefijo un nombre genérico
+            # como NVIDIA_API_KEY podría chocar con el de otro servicio en el mismo .env/entorno.
+            export YOUTUBE_SUMARIZER_NVIDIA_API_KEY='${{ secrets.NVIDIA_API_KEY }}'
+            export YOUTUBE_SUMARIZER_NVIDIA_MODEL='${{ secrets.NVIDIA_MODEL }}'
+            export YOUTUBE_SUMARIZER_EMAIL_PASS='${{ secrets.EMAIL_PASS }}'
+            export YOUTUBE_SUMARIZER_GOOGLE_CLIENT_ID='${{ secrets.GOOGLE_CLIENT_ID }}'
+            export YOUTUBE_SUMARIZER_GOOGLE_CLIENT_SECRET='${{ secrets.GOOGLE_CLIENT_SECRET }}'
+            export YOUTUBE_SUMARIZER_AUTH_SECRET='${{ secrets.AUTH_SECRET }}'
+
+            # 1. Actualizar el código de este repo
+            cd /mnt/data/dev/projects/youtube-sumarizer
+            git pull origin main
+
+            # 2. El compose real vive en titan-badger-global-services (mismo patrón que
+            # guayabera-z-web/portalmparue-web) -- build.context apunta de vuelta a este repo
+            cd /mnt/data/dev/projects/titan-badger-global-services
+
+            # Falla en cerrado: aborta si falta alguna variable requerida en vez de desplegar con
+            # secretos vacíos (ver el mismo problema real ya encontrado y corregido en itbank).
+            faltantes=$(docker compose config 2>&1 | grep "variable is not set" | grep -i "YOUTUBE_SUMARIZER" || true)
+            if [ -n "$faltantes" ]; then
+              echo "$faltantes"
+              echo "ABORT: faltan variables requeridas, no se despliega con secretos vacios"
+              exit 1
+            fi
+
+            docker compose stop youtube-sumarizer || true
+            docker compose rm -f youtube-sumarizer
+            docker images | grep youtube-sumarizer | awk '{print $3}' | xargs -r docker rmi -f || true
+            docker compose up -d --build youtube-sumarizer
