@@ -37,8 +37,12 @@ jobs:
             git pull origin main
 
             # 2. El compose real vive en titan-badger-global-services (mismo patrón que
-            # guayabera-z-web/portalmparue-web) -- build.context apunta de vuelta a este repo
+            # guayabera-z-web/portalmparue-web) -- build.context apunta de vuelta a este repo.
+            # git pull aquí también: sin esto, un cambio en docker-compose.yml/nginx de ese repo
+            # (como añadir una variable de entorno nueva) nunca llegaría al desplegar solo esta
+            # app -- el propio deploy.yml de kiricoin-web tiene este mismo hueco, no lo repito.
             cd /mnt/data/dev/projects/titan-badger-global-services
+            git pull origin main
 
             # Falla en cerrado: aborta si falta alguna variable requerida en vez de desplegar con
             # secretos vacíos (ver el mismo problema real ya encontrado y corregido en itbank).
