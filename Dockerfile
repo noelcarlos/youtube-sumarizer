@@ -17,6 +17,12 @@ WORKDIR /app
 
 ENV NODE_ENV=production
 
+# resumir_video.js invoca el binario `yt-dlp` (execAsync/spawn) para descargar subtitulos -- no es
+# una dependencia npm, hay que instalarlo a nivel de sistema. En Alpine/musl el binario standalone
+# oficial de yt-dlp (compilado para glibc) no funciona bien, así que via pip (puro Python).
+RUN apk add --no-cache python3 py3-pip && \
+    pip install --no-cache-dir --break-system-packages yt-dlp
+
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/package.json ./package.json
 COPY --from=builder /app/server.js ./server.js
