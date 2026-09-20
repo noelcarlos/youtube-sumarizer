@@ -53,7 +53,10 @@ jobs:
               exit 1
             fi
 
-            docker compose stop youtube-sumarizer || true
-            docker compose rm -f youtube-sumarizer
+            # youtube-sumarizer-v2: renombrado desde "youtube-sumarizer", que quedo zombie en
+            # dockerd (2026-09-21) -- ver el comentario en titan-badger-global-services/
+            # docker-compose.yml para el detalle completo.
+            docker compose stop youtube-sumarizer-v2 || true
+            docker compose rm -f youtube-sumarizer-v2
             docker images | grep youtube-sumarizer | awk '{print $3}' | xargs -r docker rmi -f || true
-            docker compose up -d --build youtube-sumarizer
+            docker compose up -d --build youtube-sumarizer-v2
