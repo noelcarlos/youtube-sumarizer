@@ -5,6 +5,12 @@ on:
     branches: [ main ]
   workflow_dispatch: {}
 
+# Sin esto, un push (que ya auto-despliega) y un workflow_dispatch manual corren a la vez y
+# compiten por crear el mismo nombre de contenedor -- pasó de verdad el 2026-09-21.
+concurrency:
+  group: youtube-sumarizer-deploy
+  cancel-in-progress: false
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
