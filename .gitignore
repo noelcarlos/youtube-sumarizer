@@ -1,3 +1,7 @@
+# Sesion real de Google/YouTube exportada del navegador -- nunca a git, es equivalente a una
+# contraseña, no a una API key.
+cookies.txt
+
 # Logs
 logs
 pipeline-data

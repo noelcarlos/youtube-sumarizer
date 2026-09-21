@@ -116,6 +116,14 @@ const NVIDIA_TIMEOUT_MS = 10 * 60 * 1000; // 10 min, large cloud models can queu
 // IP residencial). El repo del provider se clona/compila en el Dockerfile.
 const YTDLP_POT_ARGS = "youtubepot-bgutilscript:server_home=/opt/bgutil-ytdlp-pot-provider/server";
 
+// El PO Token solo no basto (2026-09-21): YouTube devuelve "playability status: LOGIN_REQUIRED"
+// para el video entero desde la IP del servidor, no solo un desafio anti-bot puntual que el PO
+// Token pudiera resolver -- hace falta una sesion real autenticada. Cookies exportadas del
+// navegador del usuario (nunca a git, ver .gitignore), montadas en el servidor via volumen, ruta
+// configurable porque en local (Mac del dev) no hace falta -- ahi no esta bloqueada la IP.
+const YTDLP_COOKIES_FILE = process.env.YTDLP_COOKIES_FILE;
+const YTDLP_COOKIES_ARGS = YTDLP_COOKIES_FILE ? `--cookies "${YTDLP_COOKIES_FILE}"` : "";
+
 const LMSTUDIO_API_KEY = process.env.LMSTUDIO_API_KEY;
 const LMSTUDIO_BASE_URL = "http://localhost:1234/v1";
 const LMSTUDIO_TIMEOUT_MS = 30 * 60 * 1000; // 30 min, local models can be slow on long prompts
@@ -1093,7 +1101,7 @@ export class DownloadStage extends BaseStage {
         if (!captionTracks || captionTracks.length === 0) {
             // Use yt-dlp to give a more specific reason
             try {
-                const { stdout } = await execAsync(`yt-dlp --extractor-args "${YTDLP_POT_ARGS}" --print "%(language)s|%(automatic_captions)j|%(subtitles)j" --skip-download --quiet --no-warnings "${url}"`);
+                const { stdout } = await execAsync(`yt-dlp --extractor-args "${YTDLP_POT_ARGS}" ${YTDLP_COOKIES_ARGS} --print "%(language)s|%(automatic_captions)j|%(subtitles)j" --skip-download --quiet --no-warnings "${url}"`);
                 const [audioLang, autoCapsJson, subsJson] = stdout.trim().split('|');
 
                 let autoCaps = {};
@@ -1198,6 +1206,7 @@ export class DownloadStage extends BaseStage {
                 const cmd = [
                     'yt-dlp',
                     '--extractor-args', `"${YTDLP_POT_ARGS}"`,
+                    YTDLP_COOKIES_ARGS,
                     '--skip-download',
                     '--write-auto-subs',
                     '--write-subs',
