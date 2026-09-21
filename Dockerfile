@@ -25,7 +25,24 @@ ENV NODE_ENV=production
 # to confirm you're not a bot", visto en logs reales desde la IP de este servidor) -- sin un
 # runtime de JS soportado, yt-dlp avisa que la extraccion esta degradada/deprecada.
 RUN apk add --no-cache python3 py3-pip deno && \
-    pip install --no-cache-dir --break-system-packages yt-dlp
+    pip install --no-cache-dir --break-system-packages yt-dlp bgutil-ytdlp-pot-provider
+
+# El plugin de arriba necesita el PO Token provider en modo "script" (sin servidor HTTP aparte,
+# recomendado solo para bajo volumen, que es este caso): clona el repo y compila el server/ una
+# vez en build time. resumir_video.js pasa --extractor-args
+# "youtubepot-bgutilscript:server_home=/opt/bgutil-ytdlp-pot-provider/server" a cada llamada.
+#
+# Sus dependencias incluyen "canvas" (compila nativo, resuelve retos visuales de BotGuard) --
+# necesita cairo/pango/jpeg/giflib + toolchain en Alpine, si no falla node-gyp con
+# "pkg-config: not found". Runtime libs (sin -dev) se quedan para que el binario compilado siga
+# funcionando; el resto de build-only se borra despues.
+RUN apk add --no-cache git cairo pango jpeg giflib && \
+    apk add --no-cache --virtual .build-deps build-base python3-dev pkgconfig cairo-dev pango-dev jpeg-dev giflib-dev && \
+    git clone --single-branch --branch 2.0.0 --depth 1 \
+      https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git /opt/bgutil-ytdlp-pot-provider && \
+    cd /opt/bgutil-ytdlp-pot-provider/server && \
+    npm ci --include=dev && ./node_modules/.bin/tsc && \
+    apk del .build-deps git
 
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/package.json ./package.json

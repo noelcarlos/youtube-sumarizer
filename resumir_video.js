@@ -109,6 +109,13 @@ const NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1";
 const NVIDIA_MODEL = process.env.NVIDIA_MODEL || "nvidia/nemotron-3.5-lightning-30b-a3b";
 const NVIDIA_TIMEOUT_MS = 10 * 60 * 1000; // 10 min, large cloud models can queue
 
+// PO Token para yt-dlp via bgutil-ytdlp-pot-provider (modo "script", sin servidor HTTP aparte --
+// solo recomendado para bajo volumen, que es este caso). Sin esto YouTube responde "Sign in to
+// confirm you're not a bot" desde la IP de datacenter del servidor (visto en produccion,
+// 2026-09-21) aunque el video SI tenga subtitulos reales (confirmado aparte con yt-dlp desde una
+// IP residencial). El repo del provider se clona/compila en el Dockerfile.
+const YTDLP_POT_ARGS = "youtubepot-bgutilscript:server_home=/opt/bgutil-ytdlp-pot-provider/server";
+
 const LMSTUDIO_API_KEY = process.env.LMSTUDIO_API_KEY;
 const LMSTUDIO_BASE_URL = "http://localhost:1234/v1";
 const LMSTUDIO_TIMEOUT_MS = 30 * 60 * 1000; // 30 min, local models can be slow on long prompts
@@ -1086,7 +1093,7 @@ export class DownloadStage extends BaseStage {
         if (!captionTracks || captionTracks.length === 0) {
             // Use yt-dlp to give a more specific reason
             try {
-                const { stdout } = await execAsync(`yt-dlp --print "%(language)s|%(automatic_captions)j|%(subtitles)j" --skip-download --quiet --no-warnings "${url}"`);
+                const { stdout } = await execAsync(`yt-dlp --extractor-args "${YTDLP_POT_ARGS}" --print "%(language)s|%(automatic_captions)j|%(subtitles)j" --skip-download --quiet --no-warnings "${url}"`);
                 const [audioLang, autoCapsJson, subsJson] = stdout.trim().split('|');
 
                 let autoCaps = {};
@@ -1190,6 +1197,7 @@ export class DownloadStage extends BaseStage {
             try {
                 const cmd = [
                     'yt-dlp',
+                    '--extractor-args', `"${YTDLP_POT_ARGS}"`,
                     '--skip-download',
                     '--write-auto-subs',
                     '--write-subs',
