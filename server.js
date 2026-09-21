@@ -367,7 +367,20 @@ async function buildState() {
                     trackMtime(videoIdFromFilename(f), path.join(dirPath, f));
                     continue;
                 }
-                record(videoIdFromFilename(f), stageName, bucket.toLowerCase(), f, path.join(dirPath, f));
+                const videoId = videoIdFromFilename(f);
+                // SUMMARIZE y REWRITE son hermanos en paralelo, no pasos secuenciales — un video
+                // puede estar en las DOS input/ a la vez (ver fanOutOutputs). STAGE_ORDER los
+                // recorre en ese orden fijo, así que sin este caso especial REWRITE siempre pisaba
+                // el stage mostrado aunque SUMMARIZE fuera el que de verdad estuviera procesando
+                // ese video ahora mismo (la tarjeta se veía "REWRITE, processing: false" mientras
+                // el log mostraba SUMMARIZE trabajando en él).
+                const summarizeIsActiveHere = stageName === 'REWRITE' && bucket === 'INPUT' &&
+                    summarizer.activeVideoId === videoId;
+                if (summarizeIsActiveHere) {
+                    trackMtime(videoId, path.join(dirPath, f));
+                    continue;
+                }
+                record(videoId, stageName, bucket.toLowerCase(), f, path.join(dirPath, f));
             }
         }
     }
