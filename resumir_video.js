@@ -2214,20 +2214,27 @@ export class RewriteStage extends AiJobStage {
  * videos in one run. Here the scalars are two anchored lines and the prose is simply the rest of
  * the message, so nothing about the summary's own punctuation can break parsing.
  *
- * The scalars are tolerant on purpose — leading indentation, optional bold, `**TITLE:**` — but
- * the SUMMARY: marker is required: without it there is no way to tell where prose begins, and
- * guessing would silently fold the title line into the body. Module-level (not a method) so
- * server.js can parse a `.summary-part.json` straight from disk for the "leer ya, aunque
- * Rewrite/Fusion no hayan terminado" preview, without needing an InterpretSummaryStage instance. */
+ * The scalars are tolerant on purpose — leading indentation, optional bold, `**TITLE:**` — and so
+ * is the SUMMARY: marker itself, for two failure modes seen in production (2026-09-21): the model
+ * sometimes puts the body right after "SUMMARY:" on the SAME line instead of starting a new line
+ * (the original regex required end-of-line immediately after the marker, so it simply never
+ * matched), and it sometimes translates the marker words into the transcript's own language
+ * ("Título:"/"Resumen:") despite the prompt mandating literal English markers regardless of
+ * content language. Module-level (not a method) so server.js can parse a `.summary-part.json`
+ * straight from disk for the "leer ya, aunque Rewrite/Fusion no hayan terminado" preview, without
+ * needing an InterpretSummaryStage instance. */
 export function parseSummaryOutput(raw) {
     if (!raw || !raw.trim()) throw new Error("Invalid AI output: empty summary response");
 
+    // `#` incluido en el prefijo: algunos modelos devuelven "# TITLE:" / "# SUMMARY:" en estilo
+    // heading de Markdown, no solo blockquote/bold/italic.
     const scalar = (field) => {
-        const m = raw.match(new RegExp(`^[ \\t>*_]*${field}\\s*:?\\**\\s*:?[ \\t]*(.+?)[ \\t]*$`, 'im'));
+        const m = raw.match(new RegExp(`^[ \\t>*_#]*(?:${field})\\s*:?\\**\\s*:?[ \\t]*(.+?)[ \\t]*$`, 'im'));
         return m ? m[1].replace(/^\**|\**$/g, '').trim() : '';
     };
 
-    const marker = raw.match(/^[ \t>*_]*SUMMARY\s*:?\**\s*:?[ \t]*$/im);
+    // Sin `$` al final a propósito: el cuerpo puede empezar en la misma línea que el marcador.
+    const marker = raw.match(/^[ \t>*_#]*(?:SUMMARY|RESUMEN)\s*:?\**\s*:?[ \t]*/im);
     if (!marker) {
         throw new Error(
             `Invalid AI output: no SUMMARY: marker found, so the prose body cannot be located ` +
@@ -2238,7 +2245,7 @@ export function parseSummaryOutput(raw) {
     const body = raw.slice(marker.index + marker[0].length).trim();
     if (!body) throw new Error("Invalid AI output: SUMMARY: marker present but the body is empty");
 
-    return { title: scalar('TITLE'), language: scalar('LANGUAGE'), content: body };
+    return { title: scalar('TITLE|T[IÍ]TULO'), language: scalar('LANGUAGE|IDIOMA'), content: body };
 }
 
 export class InterpretSummaryStage extends BaseStage {
