@@ -84,9 +84,50 @@ falta reiniciar ni avisar a nada. Si el servidor no está en `http://localhost:4
 SUMARIZER_SERVER_URL=http://mi-servidor:9000 node queue-cli.js "https://youtu.be/abc"
 ```
 
+### Agente de descarga local (`agent.mjs`)
+
+YouTube bloquea la IP de datacenter del servidor de producción ("Sign in to confirm you're not a
+bot" / `playability status: LOGIN_REQUIRED`) — ni un PO Token (`bgutil-ytdlp-pot-provider`) ni
+cookies de sesión reales bastaron, confirmado en producción el 2026-09-21: Google trata la sesión
+como no confiable en cuanto detecta el salto de una IP residencial a una de datacenter.
+
+La solución: `AGENT_MODE=true` en el servidor hace que `DownloadStage` deje el trabajo pendiente en
+`pipeline-data/agent-jobs/pending/` en vez de invocar `yt-dlp` él mismo, y espera (con timeout de 15
+min, cae a `error/` de forma visible si nadie lo recoge) a que aparezca el resultado en
+`agent-jobs/done/`. `agent.mjs`, corriendo en una máquina con IP residencial real, hace ese trabajo
+— reutiliza `DownloadStage.fetchTranscriptWithFallback()` tal cual, sin duplicar nada de la lógica
+de yt-dlp.
+
+**Para correrlo** (en tu propia máquina, no en el servidor):
+
+```bash
+npm run agent
+```
+
+Necesita en `.env`:
+
+```
+AGENT_SERVER_URL=https://youtube-sumarizer.mparue.com
+AGENT_TOKEN=<mismo valor que el secret AGENT_TOKEN del servidor — nunca lo cambies en un solo sitio>
+```
+
+Consulta `GET /api/agent/jobs` cada `AGENT_POLL_MS` (default 15s) y devuelve el resultado a
+`POST /api/agent/jobs/:videoId/result`, autenticado con `Authorization: Bearer $AGENT_TOKEN` — esa
+ruta está excluida a propósito del login de Google (`web/src/middleware.js`), no tiene ni necesita
+sesión.
+
+**El tradeoff real:** mientras tu máquina esté dormida o desconectada, los vídeos encolados se
+quedan esperando — no es "se procesa al encolar", es "se procesa cuando el agente esté despierto".
+Sin `AGENT_MODE` (o corriendo en local, donde la IP no está bloqueada), `DownloadStage` sigue
+funcionando exactamente igual que siempre, sin ningún agente de por medio.
+
 ### Requisitos externos
 
 - **`yt-dlp`** en el `PATH` — la fase de descarga lo invoca como binario, no es una dependencia npm.
+- **`deno`** — runtime de JS que yt-dlp usa para resolver el challenge anti-bot de YouTube.
+- **`bgutil-ytdlp-pot-provider`** (modo script, clonado/compilado en el `Dockerfile`) — genera el
+  PO Token; por sí solo no basta contra el bloqueo de IP de datacenter (ver arriba), pero sigue
+  haciendo falta para todo lo demás.
 
 ## Providers
 
