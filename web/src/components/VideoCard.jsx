@@ -13,6 +13,13 @@ function formatBytes(bytes) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+function formatDurationMs(ms) {
+  const sec = Math.round(ms / 1000);
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  return m > 0 ? `${m}m${String(s).padStart(2, '0')}s` : `${s}s`;
+}
+
 /** El punto en si — hueco mientras espera turno, relleno solido en cuanto pasa por esa etapa. El
  * anillo ambar en "active" es la unica animacion de la tarjeta, y solo corre mientras esa etapa
  * de verdad esta trabajando (motion-safe: respeta prefers-reduced-motion). */
@@ -250,6 +257,7 @@ export function VideoCard({ video, onOpenReader }) {
                   {video.currentSummarizeModel && video.summaryModel !== video.currentSummarizeModel && (
                     <span className="text-warn"> ({t('modelOutdated')})</span>
                   )}
+                  {typeof video.summaryDurationMs === 'number' && ` · ${formatDurationMs(video.summaryDurationMs)}`}
                 </div>
               )}
               {video.rewriteModel && (
@@ -258,6 +266,7 @@ export function VideoCard({ video, onOpenReader }) {
                   {video.currentRewriteModel && video.rewriteModel !== video.currentRewriteModel && (
                     <span className="text-warn"> ({t('modelOutdated')})</span>
                   )}
+                  {typeof video.rewriteDurationMs === 'number' && ` · ${formatDurationMs(video.rewriteDurationMs)}`}
                 </div>
               )}
             </div>

@@ -1943,11 +1943,13 @@ export class SummarizeStage extends AiJobStage {
             // Se guarda TODO lo que trajo download/output (incluido el transcript) para que
             // InterpretSummary tenga de donde tirar despues de juntar las dos mitades — es la
             // misma duplicacion que ya existia antes de separar esta etapa en dos.
+            const summaryDurationMs = Date.now() - fileStart;
             const summaryPart = {
                 ...data,
                 summaryModel: model,
                 summaryClient: client,
                 summaryDate: new Date().toISOString(),
+                summaryDurationMs,
                 summaryStrategy,
                 ...(summaryMapChunks ? { summaryMapChunks, summaryMapChunkChars } : {}),
                 rawContent,
@@ -1957,7 +1959,7 @@ export class SummarizeStage extends AiJobStage {
             await fs.writeFile(outPath, JSON.stringify(summaryPart, null, 2));
             await this.logSuccess([filePath], [outPath]);
 
-            console.log(`   🏁 ${videoId} (resumen, ${summaryStrategy}) completado en ${Math.round((Date.now() - fileStart) / 1000)}s`);
+            console.log(`   🏁 ${videoId} (resumen, ${summaryStrategy}) completado en ${Math.round(summaryDurationMs / 1000)}s`);
         } catch (err) {
             const wasCancelled = this.wasCancelled();
             const reported = wasCancelled ? new Error('Cancelado por el usuario') : err;
@@ -2182,11 +2184,13 @@ export class RewriteStage extends AiJobStage {
             // A diferencia de SummarizeStage, esto NO repite todo el download/output — el
             // resumen ya lo hace (ver SummarizeStage), asi que aqui solo va lo que le falta a
             // InterpretSummary para completar la mitad de rewrite.
+            const rewriteDurationMs = Date.now() - fileStart;
             const rewritePart = {
                 videoId,
                 rewriteModel: model,
                 rewriteClient: client,
                 rewriteDate: new Date().toISOString(),
+                rewriteDurationMs,
                 fullContentChunks,
             };
 
@@ -2194,7 +2198,7 @@ export class RewriteStage extends AiJobStage {
             await fs.writeFile(outPath, JSON.stringify(rewritePart, null, 2));
             await this.logSuccess([filePath], [outPath]);
 
-            console.log(`   🏁 ${videoId} (reescritura) completado en ${Math.round((Date.now() - fileStart) / 1000)}s`);
+            console.log(`   🏁 ${videoId} (reescritura) completado en ${Math.round(rewriteDurationMs / 1000)}s`);
         } catch (err) {
             const wasCancelled = this.wasCancelled();
             const reported = wasCancelled ? new Error('Cancelado por el usuario') : err;
@@ -2334,8 +2338,10 @@ export class InterpretSummaryStage extends BaseStage {
                 client,
                 summaryModel: summaryData.summaryModel,
                 summaryClient: summaryData.summaryClient,
+                summaryDurationMs: summaryData.summaryDurationMs,
                 rewriteModel: rewriteData.rewriteModel,
                 rewriteClient: rewriteData.rewriteClient,
+                rewriteDurationMs: rewriteData.rewriteDurationMs,
                 rewriteSkipped: Boolean(rewriteData.rewriteSkipped),
                 summaryBody: parsed.content || "",
                 fullContent: fullContent,

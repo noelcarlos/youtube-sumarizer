@@ -497,6 +497,10 @@ async function enrichVideo(v) {
                 model: data.model || data.summaryModel || data.rewriteModel || null,
                 summaryModel: data.summaryModel || null,
                 rewriteModel: data.rewriteModel || null,
+                // Cuánto tardó CADA mitad en su llamada a IA — null hasta que esa mitad termine
+                // (o si Rewrite se saltó con "usar sin pulir", que no tiene llamada que medir).
+                summaryDurationMs: data.summaryDurationMs ?? null,
+                rewriteDurationMs: data.rewriteDurationMs ?? null,
                 url: data.url || null,
             };
         } catch { /* ese candidato no existe o no es JSON — se prueba el siguiente */ }
@@ -509,6 +513,8 @@ async function enrichVideo(v) {
         model: null,
         summaryModel: null,
         rewriteModel: null,
+        summaryDurationMs: null,
+        rewriteDurationMs: null,
         url: null,
     };
 }
