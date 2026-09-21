@@ -35,6 +35,11 @@ const nextConfig = {
         source: '/api/videos/:path*',
         destination: 'http://127.0.0.1:4577/api/videos/:path*',
       },
+      {
+        // agent.mjs -- ver AGENT_TOKEN/middleware.js, excluido a proposito del login de Google.
+        source: '/api/agent/:path*',
+        destination: 'http://127.0.0.1:4577/api/agent/:path*',
+      },
     ];
   },
 };

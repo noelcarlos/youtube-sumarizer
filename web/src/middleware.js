@@ -9,9 +9,11 @@ export default auth((req) => {
   }
 })
 
-// Todo excepto las rutas del propio NextAuth (si no, el flujo de login nunca podría completarse)
-// y los assets estáticos de Next -- incluye a propósito /api/state, /api/enqueue, /api/settings
-// (el pipeline) y /api/youtube/*, no solo las páginas.
+// Todo excepto las rutas del propio NextAuth (si no, el flujo de login nunca podría completarse),
+// los assets estáticos de Next, y /api/agent/* (agent.mjs se autentica con su propio bearer token
+// contra server.js -- ver AGENT_TOKEN -- no tiene sesión de Google ni la necesita). El resto
+// incluye a propósito /api/state, /api/enqueue, /api/settings (el pipeline) y /api/youtube/*, no
+// solo las páginas.
 export const config = {
-  matcher: ["/((?!api/auth|_next/static|_next/image|favicon.ico).*)"],
+  matcher: ["/((?!api/auth|api/agent|_next/static|_next/image|favicon.ico).*)"],
 }
