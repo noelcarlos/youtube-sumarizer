@@ -26,6 +26,10 @@ import {
 // maquina; `PORT` en .env lo cambia si hiciera falta.
 const PORT = Number(process.env.PORT || 4577);
 
+// Autentica a agent.mjs contra /api/agent/* -- ver resumir_video.js para el porque del modo
+// agente en si (PO Token y cookies no bastaron contra el bloqueo de YouTube por IP).
+const AGENT_TOKEN = process.env.AGENT_TOKEN;
+
 await initDirs();
 
 // ==========================================================
@@ -450,11 +454,21 @@ async function enrichVideo(v) {
     for (const p of candidates) {
         try {
             const data = JSON.parse(await fs.readFile(p, 'utf8'));
+            // El .summary-part.json (SUMMARIZE ya termino, Rewrite/Fusion todavia no) no tiene
+            // title/language como campo propio: el modelo los devuelve embebidos en las primeras
+            // lineas de rawContent ("TITLE: ...\nLANGUAGE: ...") y solo InterpretSummaryStage los
+            // extrae al fusionar. Sin este parseo, data.title siempre era undefined aqui y la
+            // tarjeta se quedaba en "esperando titulo" durante todo Rewrite aunque el drawer de
+            // detalle (que si parsea rawContent, ver /api/videos/:id/data) ya lo mostrara bien.
+            let parsedFromRaw = null;
+            if (data.rawContent) {
+                try { parsedFromRaw = parseSummaryOutput(data.rawContent); } catch { /* rawContent aun incompleto/no parseable */ }
+            }
             return {
                 ...v,
                 stageLabel: STAGE_LABEL[v.stage] || v.stage,
-                title: data.title || null,
-                language: data.language || null,
+                title: parsedFromRaw?.title || data.title || null,
+                language: parsedFromRaw?.language || data.language || null,
                 // data.model existe una vez que InterpretSummary junto las dos mitades;
                 // summaryModel/rewriteModel es lo que hay ANTES de eso, mientras cada etapa
                 // todavia esta trabajando por su lado. Se exponen los tres: la UI necesita saber
@@ -757,6 +771,41 @@ const server = http.createServer(async (req, res) => {
             // activo ahora. Entre los que no estan procesando, sigue ganando el mas reciente.
             enriched.sort((a, b) => (b.processing - a.processing) || (b.updatedAt - a.updatedAt));
             return sendJson(res, 200, enriched);
+        }
+
+        // ==========================================================
+        // AGENT — agent.mjs (corriendo en una IP residencial real) consulta/entrega aqui. Nunca
+        // publico: sin AGENT_TOKEN configurado, ambos 404 en vez de 401 -- no hay pista de que
+        // esta ruta existe si el modo agente no esta en uso.
+        // ==========================================================
+        if (url.pathname === '/api/agent/jobs' || url.pathname.startsWith('/api/agent/jobs/')) {
+            if (!AGENT_TOKEN) return sendJson(res, 404, { error: 'not found' });
+            const auth = req.headers['authorization'] || '';
+            if (auth !== `Bearer ${AGENT_TOKEN}`) return sendJson(res, 401, { error: 'unauthorized' });
+
+            if (req.method === 'GET' && url.pathname === '/api/agent/jobs') {
+                const files = await fs.readdir(DIRS.AGENT_JOBS.PENDING).catch(() => []);
+                const jobs = await Promise.all(
+                    files.filter((f) => f.endsWith('.json')).map(async (f) => {
+                        try {
+                            return JSON.parse(await fs.readFile(path.join(DIRS.AGENT_JOBS.PENDING, f), 'utf-8'));
+                        } catch {
+                            return null;
+                        }
+                    })
+                );
+                return sendJson(res, 200, jobs.filter(Boolean));
+            }
+
+            if (req.method === 'POST' && url.pathname.startsWith('/api/agent/jobs/') && url.pathname.endsWith('/result')) {
+                const videoId = url.pathname.split('/')[4];
+                let body = '';
+                for await (const chunk of req) body += chunk;
+                let parsed;
+                try { parsed = JSON.parse(body || '{}'); } catch { return sendJson(res, 400, { error: 'JSON invalido' }); }
+                await fs.writeFile(path.join(DIRS.AGENT_JOBS.DONE, `${videoId}.json`), JSON.stringify(parsed, null, 2));
+                return sendJson(res, 200, { ok: true });
+            }
         }
 
         if (req.method === 'POST' && url.pathname.startsWith('/api/videos/') && url.pathname.endsWith('/cancel')) {

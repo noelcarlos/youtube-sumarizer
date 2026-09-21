@@ -14,6 +14,7 @@
     "build": "npm run build --workspace web",
     "start": "node --watch server.js",
     "start:web": "npm run start --workspace web",
+    "agent": "node agent.mjs",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],

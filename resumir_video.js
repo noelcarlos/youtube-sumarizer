@@ -83,6 +83,17 @@ export const DIRS = {
     },
 
     // ======================================================
+    // AGENT JOBS — delegacion de la descarga a un agente en una IP residencial (ver agent.mjs).
+    // El propio DownloadStage escribe en PENDING y espera a que aparezca el mismo videoId en
+    // DONE; nunca se procesan "en cola" secuencialmente como las demas etapas, cada video es su
+    // propio archivo independiente desde el minuto uno.
+    // ======================================================
+    AGENT_JOBS: {
+        PENDING: path.join(BASE, 'agent-jobs/pending'),
+        DONE: path.join(BASE, 'agent-jobs/done')
+    },
+
+    // ======================================================
     // FINAL / SYSTEM
     // ======================================================
     DONE: path.join(BASE, 'done'),
@@ -123,6 +134,17 @@ const YTDLP_POT_ARGS = "youtubepot-bgutilscript:server_home=/opt/bgutil-ytdlp-po
 // configurable porque en local (Mac del dev) no hace falta -- ahi no esta bloqueada la IP.
 const YTDLP_COOKIES_FILE = process.env.YTDLP_COOKIES_FILE;
 const YTDLP_COOKIES_ARGS = YTDLP_COOKIES_FILE ? `--cookies "${YTDLP_COOKIES_FILE}"` : "";
+
+// Ni PO Token ni cookies bastaron (2026-09-21): Google trata la sesion como no confiable en
+// cuanto detecta el salto de ubicacion (cookie de una IP residencial, usada desde un datacenter).
+// AGENT_MODE delega la descarga entera a agent.mjs corriendo en una maquina residencial real --
+// ver DIRS.AGENT_JOBS y fetchTranscriptViaAgent.
+const AGENT_MODE = process.env.AGENT_MODE === 'true';
+const AGENT_TOKEN = process.env.AGENT_TOKEN;
+const AGENT_JOB_TIMEOUT_MS = 15 * 60 * 1000; // 15 min -- tiempo de sobra para que alguien note
+                                              // que su Mac esta dormido y lo despierte; si se
+                                              // supera, el video cae a error/ de forma visible.
+const AGENT_POLL_MS = 3000;
 
 const LMSTUDIO_API_KEY = process.env.LMSTUDIO_API_KEY;
 const LMSTUDIO_BASE_URL = "http://localhost:1234/v1";
@@ -1090,6 +1112,41 @@ export class DownloadStage extends BaseStage {
         return extractVideoId(url);
     }
 
+    /** Delega la descarga a agent.mjs corriendo en una IP residencial real -- ver AGENT_MODE.
+     * Deja el trabajo en AGENT_JOBS.PENDING y espera (polling, no bloquea el resto del
+     * pipeline porque cada DownloadStage.execute() ya corre su propio archivo independiente)
+     * a que aparezca el mismo videoId en AGENT_JOBS.DONE. Si nadie lo recoge a tiempo, el
+     * timeout tira un error normal -- este video cae a error/ igual que cualquier otro fallo,
+     * visible en la UI, no silencioso. */
+    async fetchTranscriptViaAgent(url, videoId) {
+        const pendingPath = path.join(DIRS.AGENT_JOBS.PENDING, `${videoId}.json`);
+        const donePath = path.join(DIRS.AGENT_JOBS.DONE, `${videoId}.json`);
+
+        await fs.writeFile(pendingPath, JSON.stringify({ videoId, url, requestedAt: new Date().toISOString() }, null, 2));
+        console.log(`   🏠 Trabajo dejado para el agente local (${videoId}), esperando...`);
+
+        const deadline = Date.now() + AGENT_JOB_TIMEOUT_MS;
+        while (Date.now() < deadline) {
+            let raw;
+            try {
+                raw = await fs.readFile(donePath, 'utf-8');
+            } catch {
+                await sleep(AGENT_POLL_MS);
+                continue;
+            }
+
+            await fs.unlink(donePath).catch(() => {});
+            await fs.unlink(pendingPath).catch(() => {});
+
+            const result = JSON.parse(raw);
+            if (result.error) throw new Error(result.error);
+            return { text: result.text, languageUsed: result.languageUsed };
+        }
+
+        await fs.unlink(pendingPath).catch(() => {});
+        throw new Error(`El agente local no recogió el video en ${AGENT_JOB_TIMEOUT_MS / 60000} minutos (¿está tu Mac despierto y con agent.mjs corriendo?).`);
+    }
+
     async fetchTranscriptWithFallback(url) {
         const videoId = this.extractVideoId(url);
         console.log(`   🔍 1. ID extracted: ${videoId}`);
@@ -1310,7 +1367,9 @@ export class DownloadStage extends BaseStage {
             }
 
             // Fetch transcript
-            const transcript = await this.fetchTranscriptWithFallback(url);
+            const transcript = AGENT_MODE
+                ? await this.fetchTranscriptViaAgent(url, videoId)
+                : await this.fetchTranscriptWithFallback(url);
             //const transcriptArray = await YoutubeTranscript.fetchTranscript(url);
             const transcriptText = transcript.text;
 
