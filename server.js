@@ -371,12 +371,17 @@ async function buildState() {
                 // SUMMARIZE y REWRITE son hermanos en paralelo, no pasos secuenciales — un video
                 // puede estar en las DOS input/ a la vez (ver fanOutOutputs). STAGE_ORDER los
                 // recorre en ese orden fijo, así que sin este caso especial REWRITE siempre pisaba
-                // el stage mostrado aunque SUMMARIZE fuera el que de verdad estuviera procesando
-                // ese video ahora mismo (la tarjeta se veía "REWRITE, processing: false" mientras
-                // el log mostraba SUMMARIZE trabajando en él).
-                const summarizeIsActiveHere = stageName === 'REWRITE' && bucket === 'INPUT' &&
-                    summarizer.activeVideoId === videoId;
-                if (summarizeIsActiveHere) {
+                // el stage mostrado aunque SUMMARIZE todavía no hubiera ni empezado con ese video
+                // (la tarjeta se veía "REWRITE" — y encima "processing: false" mientras el log
+                // mostraba SUMMARIZE trabajando en él — para prácticamente TODO el backlog, porque
+                // casi todo lo que está en rewrite/input también está en summarize/input a la vez).
+                // Mientras la copia en SUMMARIZE.INPUT siga ahí sin consumir, esa es la etapa real
+                // que bloquea al video — REWRITE solo debe ganar el display una vez SUMMARIZE ya
+                // haya avanzado (a output/error, o desaparecido de su input).
+                const existing = byVideo.get(videoId);
+                const summarizeStillPending = stageName === 'REWRITE' && bucket === 'INPUT' &&
+                    existing?.stage === 'SUMMARIZE' && existing?.bucket === 'input';
+                if (summarizeStillPending) {
                     trackMtime(videoId, path.join(dirPath, f));
                     continue;
                 }
