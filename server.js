@@ -375,13 +375,16 @@ async function buildState() {
                 // (la tarjeta se veía "REWRITE" — y encima "processing: false" mientras el log
                 // mostraba SUMMARIZE trabajando en él — para prácticamente TODO el backlog, porque
                 // casi todo lo que está en rewrite/input también está en summarize/input a la vez).
-                // Mientras la copia en SUMMARIZE.INPUT siga ahí sin consumir, esa es la etapa real
-                // que bloquea al video — REWRITE solo debe ganar el display una vez SUMMARIZE ya
-                // haya avanzado (a output/error, o desaparecido de su input).
+                // Mientras la copia en SUMMARIZE siga sin haber avanzado a output/ (input O
+                // error — un fallo cuenta como "no ha avanzado", no como "ya pasó"), esa es la
+                // etapa real que bloquea al video. Sin el caso 'error' aquí, un video cuyo
+                // SUMMARIZE falló de verdad se seguía viendo como REWRITE/input normal — parecía
+                // solo "esperando turno" en vez de "necesita reintentar", y por eso no aparecía
+                // ningún botón de reprocesar (el error real quedaba tapado).
                 const existing = byVideo.get(videoId);
-                const summarizeStillPending = stageName === 'REWRITE' && bucket === 'INPUT' &&
-                    existing?.stage === 'SUMMARIZE' && existing?.bucket === 'input';
-                if (summarizeStillPending) {
+                const summarizeNotAdvanced = stageName === 'REWRITE' && bucket === 'INPUT' &&
+                    existing?.stage === 'SUMMARIZE' && (existing?.bucket === 'input' || existing?.bucket === 'error');
+                if (summarizeNotAdvanced) {
                     trackMtime(videoId, path.join(dirPath, f));
                     continue;
                 }
