@@ -37,6 +37,7 @@ jobs:
             export YOUTUBE_SUMARIZER_GOOGLE_CLIENT_SECRET='${{ secrets.GOOGLE_CLIENT_SECRET }}'
             export YOUTUBE_SUMARIZER_AUTH_SECRET='${{ secrets.AUTH_SECRET }}'
             export YOUTUBE_SUMARIZER_ALLOWED_EMAILS='${{ secrets.ALLOWED_EMAILS }}'
+            export YOUTUBE_SUMARIZER_AGENT_TOKEN='${{ secrets.AGENT_TOKEN }}'
 
             # 1. Actualizar el código de este repo
             cd /mnt/data/dev/projects/youtube-sumarizer
