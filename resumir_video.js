@@ -385,6 +385,13 @@ class OpenAICompatibleClient extends IModelClient {
                 model: this.modelName,
                 messages: [{ role: "user", content: promptContent }],
                 temperature: 0.1,
+                // NVIDIA sirve varios Nemotron como modelos "razonadores" con reasoning ON por
+                // defecto (confirmado en la model card de nemotron-3.5-lightning) — sin esto, a
+                // veces la cadena de pensamiento se come todo el output y nunca llega a escribir
+                // TITLE/LANGUAGE/SUMMARY (fallos "no SUMMARY marker found" del 2026-09-22, ~12%
+                // de las llamadas a este modelo). Solo para NVIDIA: DeepSeek no usa esta
+                // convencion de chat_template_kwargs y podria rechazar el campo.
+                ...(this.label === "NVIDIA" ? { chat_template_kwargs: { enable_thinking: false } } : {}),
             }, { signal }));
         } catch (err) {
             const elapsedSec = Math.round((Date.now() - startedAt) / 1000);
