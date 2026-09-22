@@ -139,6 +139,9 @@ Se elige con `AI_PROVIDER` en `.env`. El cliente se construye una vez por run (`
 | `nvidia` | `NVIDIA_API_KEY` | `NVIDIA_MODEL` | NVIDIA Cloud, OpenAI-compatible |
 | `gemini` | `GEMINI_API_KEY` | hardcodeado en `GEMINI_MODEL` | SDK propio (`@google/genai`) |
 | `deepseek` | `DEEPSEEK_API_KEY` | hardcodeado en `DEEPSEEK_MODEL` | API directa de DeepSeek |
+| `xkiro` | `XKIRO_API_KEY` | `XKIRO_MODEL` | OpenAI-compatible, catálogo de modelos `:free` (Qwen/MiniMax/Mistral/SenseNova) |
+| `zai` | `ZAI_API_KEY` | `ZAI_MODEL` | OpenAI-compatible, GLM — solo `glm-4.5-flash`/`glm-4.7-flash` son gratis, el resto de GLM pide saldo |
+| `openrouter` | `OPENROUTER_API_KEY` | `OPENROUTER_MODEL` | OpenAI-compatible, enruta a terceros — los modelos `:free` comparten un pool con rate-limit propio, no es la cuenta |
 
 Si falta la key de un provider cloud, el run falla al arrancar con el nombre de la variable que hay que poner, en vez de salir un 401 opaco a mitad de proceso.
 

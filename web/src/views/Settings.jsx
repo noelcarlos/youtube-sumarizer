@@ -9,7 +9,7 @@ import { Switch } from '../components/ui/switch.jsx';
 import { AppHeader } from '../components/AppHeader.jsx';
 import { useSettings } from '../hooks/useSettings.js';
 
-const PROVIDERS = ['lmstudio', 'nvidia', 'gemini', 'deepseek'];
+const PROVIDERS = ['lmstudio', 'nvidia', 'gemini', 'deepseek', 'xkiro', 'zai', 'openrouter'];
 
 // Cada etapa pausable, junto con la clave de traduccion de su nombre — mismo orden que el
 // pipeline avanza (descarga -> resumen/reescritura EN PARALELO -> fusion -> email).

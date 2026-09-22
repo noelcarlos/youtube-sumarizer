@@ -32,6 +32,9 @@ jobs:
             # como NVIDIA_API_KEY podría chocar con el de otro servicio en el mismo .env/entorno.
             export YOUTUBE_SUMARIZER_NVIDIA_API_KEY='${{ secrets.NVIDIA_API_KEY }}'
             export YOUTUBE_SUMARIZER_NVIDIA_MODEL='${{ secrets.NVIDIA_MODEL }}'
+            export YOUTUBE_SUMARIZER_XKIRO_API_KEY='${{ secrets.XKIRO_API_KEY }}'
+            export YOUTUBE_SUMARIZER_ZAI_API_KEY='${{ secrets.ZAI_API_KEY }}'
+            export YOUTUBE_SUMARIZER_OPENROUTER_API_KEY='${{ secrets.OPENROUTER_API_KEY }}'
             export YOUTUBE_SUMARIZER_EMAIL_PASS='${{ secrets.EMAIL_PASS }}'
             export YOUTUBE_SUMARIZER_GOOGLE_CLIENT_ID='${{ secrets.GOOGLE_CLIENT_ID }}'
             export YOUTUBE_SUMARIZER_GOOGLE_CLIENT_SECRET='${{ secrets.GOOGLE_CLIENT_SECRET }}'

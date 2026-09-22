@@ -47,7 +47,7 @@ const SETTINGS_PATH = path.join('pipeline-data', 'settings.json');
 function defaultLlmStageConfig() {
     return {
         provider: process.env.AI_PROVIDER || 'lmstudio',
-        overrides: { gemini: {}, deepseek: {}, nvidia: {}, lmstudio: {} },
+        overrides: { gemini: {}, deepseek: {}, nvidia: {}, lmstudio: {}, xkiro: {}, zai: {}, openrouter: {} },
     };
 }
 

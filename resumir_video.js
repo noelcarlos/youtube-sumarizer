@@ -120,6 +120,23 @@ const NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1";
 const NVIDIA_MODEL = process.env.NVIDIA_MODEL || "nvidia/nemotron-3.5-lightning-30b-a3b";
 const NVIDIA_TIMEOUT_MS = 10 * 60 * 1000; // 10 min, large cloud models can queue
 
+// Los tres siguientes son OpenAI-compatible igual que NVIDIA/DeepSeek — mismo
+// OpenAICompatibleClient, solo cambia baseURL/key/modelo. Todos validados con una llamada real el
+// 2026-09-22 antes de añadirlos aquí (ver memoria del proyecto).
+const XKIRO_API_KEY = process.env.XKIRO_API_KEY;
+const XKIRO_BASE_URL = "https://api.xkiro.com/v1";
+const XKIRO_MODEL = process.env.XKIRO_MODEL || "qwen/qwen3.8-max:free";
+
+const ZAI_API_KEY = process.env.ZAI_API_KEY;
+const ZAI_BASE_URL = "https://api.z.ai/api/paas/v4";
+const ZAI_MODEL = process.env.ZAI_MODEL || "glm-4.5-flash";
+
+// OpenRouter enruta a proveedores de terceros — algunos modelos ":free" comparten un pool con
+// rate-limit propio (visto 429 "temporarily rate-limited upstream" el 2026-09-22, no es la cuenta).
+const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
+const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
+const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || "nex-agi/nex-n2.5-pro:free";
+
 // PO Token para yt-dlp via bgutil-ytdlp-pot-provider (modo "script", sin servidor HTTP aparte --
 // solo recomendado para bajo volumen, que es este caso). Sin esto YouTube responde "Sign in to
 // confirm you're not a bot" desde la IP de datacenter del servidor (visto en produccion,
@@ -490,6 +507,9 @@ export const AI_PROVIDER_DEFAULTS = {
     deepseek: { model: DEEPSEEK_MODEL, baseUrl: DEEPSEEK_BASE_URL, hasKey: Boolean(DEEPSEEK_API_KEY) },
     nvidia: { model: NVIDIA_MODEL, baseUrl: NVIDIA_BASE_URL, hasKey: Boolean(NVIDIA_API_KEY) },
     lmstudio: { model: LMSTUDIO_MODEL_NAME, baseUrl: LMSTUDIO_BASE_URL, hasKey: Boolean(LMSTUDIO_API_KEY) },
+    xkiro: { model: XKIRO_MODEL, baseUrl: XKIRO_BASE_URL, hasKey: Boolean(XKIRO_API_KEY) },
+    zai: { model: ZAI_MODEL, baseUrl: ZAI_BASE_URL, hasKey: Boolean(ZAI_API_KEY) },
+    openrouter: { model: OPENROUTER_MODEL, baseUrl: OPENROUTER_BASE_URL, hasKey: Boolean(OPENROUTER_API_KEY) },
 };
 
 /** `overrides` deja que Settings (server.js) reconfigure el proveedor en caliente — otro modelo,
@@ -516,6 +536,27 @@ export function createAiClient(provider, overrides = {}) {
                 overrides.model || NVIDIA_MODEL,
                 NVIDIA_TIMEOUT_MS, "NVIDIA",
             );
+        case 'xkiro':
+            return new OpenAICompatibleClient(
+                requireKey(overrides.apiKey || XKIRO_API_KEY, provider, 'XKIRO_API_KEY'),
+                overrides.baseUrl || XKIRO_BASE_URL,
+                overrides.model || XKIRO_MODEL,
+                10 * 60 * 1000, "XKiro",
+            );
+        case 'zai':
+            return new OpenAICompatibleClient(
+                requireKey(overrides.apiKey || ZAI_API_KEY, provider, 'ZAI_API_KEY'),
+                overrides.baseUrl || ZAI_BASE_URL,
+                overrides.model || ZAI_MODEL,
+                10 * 60 * 1000, "Z.AI",
+            );
+        case 'openrouter':
+            return new OpenAICompatibleClient(
+                requireKey(overrides.apiKey || OPENROUTER_API_KEY, provider, 'OPENROUTER_API_KEY'),
+                overrides.baseUrl || OPENROUTER_BASE_URL,
+                overrides.model || OPENROUTER_MODEL,
+                10 * 60 * 1000, "OpenRouter",
+            );
         case 'lmstudio':
             return new LMStudioClient(
                 overrides.apiKey || LMSTUDIO_API_KEY,
@@ -523,7 +564,7 @@ export function createAiClient(provider, overrides = {}) {
                 overrides.model || LMSTUDIO_MODEL_NAME,
                 LMSTUDIO_TIMEOUT_MS,
             );
-        default: throw new Error(`Unknown provider: ${provider}. Valid: gemini, deepseek, nvidia, lmstudio`);
+        default: throw new Error(`Unknown provider: ${provider}. Valid: gemini, deepseek, nvidia, lmstudio, xkiro, zai, openrouter`);
     }
 }
 
@@ -583,7 +624,22 @@ export async function listModels(provider, overrides = {}) {
             for await (const m of pager) ids.push((m.name || '').replace(/^models\//, ''));
             return ids.filter(Boolean).sort();
         }
-        default: throw new Error(`Unknown provider: ${provider}. Valid: gemini, deepseek, nvidia, lmstudio`);
+        case 'xkiro': {
+            const client = new OpenAI({ apiKey: requireKey(overrides.apiKey || XKIRO_API_KEY, provider, 'XKIRO_API_KEY'), baseURL: overrides.baseUrl || XKIRO_BASE_URL });
+            const list = await client.models.list();
+            return list.data.map(m => m.id).sort();
+        }
+        case 'zai': {
+            const client = new OpenAI({ apiKey: requireKey(overrides.apiKey || ZAI_API_KEY, provider, 'ZAI_API_KEY'), baseURL: overrides.baseUrl || ZAI_BASE_URL });
+            const list = await client.models.list();
+            return list.data.map(m => m.id).sort();
+        }
+        case 'openrouter': {
+            const client = new OpenAI({ apiKey: requireKey(overrides.apiKey || OPENROUTER_API_KEY, provider, 'OPENROUTER_API_KEY'), baseURL: overrides.baseUrl || OPENROUTER_BASE_URL });
+            const list = await client.models.list();
+            return list.data.map(m => m.id).sort();
+        }
+        default: throw new Error(`Unknown provider: ${provider}. Valid: gemini, deepseek, nvidia, lmstudio, xkiro, zai, openrouter`);
     }
 }
 
